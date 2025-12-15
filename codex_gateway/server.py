@@ -196,8 +196,9 @@ async def chat_completions(
                     logger.info("[%s] codex %s file_change %s", resp_id, t, ", ".join(paths)[: settings.log_max_chars])
                     return
                 if itype == "agent_message":
-                    text = item.get("text") or ""
-                    logger.info("[%s] codex %s agent_message_chars=%d", resp_id, t, len(str(text)))
+                    text = _maybe_strip_answer_tags(str(item.get("text") or ""))
+                    logger.info("[%s] codex %s agent_message_chars=%d", resp_id, t, len(text))
+                    logger.info("[%s] codex agent_message:\n%s", resp_id, _truncate_for_log(text))
                     return
                 if itype == "reasoning":
                     r = item.get("text") or ""
