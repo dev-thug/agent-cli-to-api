@@ -49,3 +49,48 @@ def messages_to_prompt(messages: list[ChatMessage]) -> str:
         text = normalize_message_content(message.content)
         parts.append(f"{role}: {text}")
     return "\n\n".join(parts).strip()
+
+
+def extract_image_urls_from_content(content: Any) -> list[str]:
+    urls: list[str] = []
+    if content is None:
+        return urls
+
+    # Accept single-part formats in addition to the OpenAI list-of-parts format.
+    if isinstance(content, dict):
+        part_type = content.get("type")
+        if part_type in {"image_url", "input_image"}:
+            image = content.get("image_url")
+            if isinstance(image, dict):
+                url = image.get("url")
+                if isinstance(url, str) and url:
+                    urls.append(url)
+            elif isinstance(image, str) and image:
+                urls.append(image)
+        return urls
+
+    if not isinstance(content, list):
+        return urls
+
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        part_type = part.get("type")
+        if part_type not in {"image_url", "input_image"}:
+            continue
+        image = part.get("image_url")
+        if isinstance(image, dict):
+            url = image.get("url")
+            if isinstance(url, str) and url:
+                urls.append(url)
+        elif isinstance(image, str) and image:
+            urls.append(image)
+
+    return urls
+
+
+def extract_image_urls(messages: list[ChatMessage]) -> list[str]:
+    urls: list[str] = []
+    for message in messages:
+        urls.extend(extract_image_urls_from_content(message.content))
+    return urls

@@ -92,20 +92,40 @@ class Settings:
     model_aliases: dict[str, str] = field(default_factory=lambda: _env_json_dict_str_str("CODEX_MODEL_ALIASES"))
     advertised_models: list[str] = field(default_factory=lambda: _env_csv("CODEX_ADVERTISED_MODELS"))
 
+    # Optional other agent CLIs (multi-provider).
+    cursor_agent_bin: str = os.environ.get("CURSOR_AGENT_BIN", "cursor-agent")
+    cursor_agent_api_key: str | None = os.environ.get("CURSOR_AGENT_API_KEY") or os.environ.get("CURSOR_API_KEY")
+    cursor_agent_model: str | None = (_env_str("CURSOR_AGENT_MODEL", "").strip() or None)
+    cursor_agent_stream_partial_output: bool = _env_bool("CURSOR_AGENT_STREAM_PARTIAL_OUTPUT", True)
+
+    claude_bin: str = os.environ.get("CLAUDE_BIN", "claude")
+    claude_model: str | None = (_env_str("CLAUDE_MODEL", "").strip() or None)
+
+    gemini_bin: str = os.environ.get("GEMINI_BIN", "gemini")
+    gemini_model: str | None = (_env_str("GEMINI_MODEL", "").strip() or None)
+
     # Hard safety caps.
     max_prompt_chars: int = _env_int("CODEX_MAX_PROMPT_CHARS", 200_000)
     timeout_seconds: int = _env_int("CODEX_TIMEOUT_SECONDS", 600)
     max_concurrency: int = _env_int("CODEX_MAX_CONCURRENCY", 2)
     # asyncio StreamReader limit for the Codex subprocess pipes. The default (64KiB)
     # is often too small for NDJSON events that can contain large assistant/tool text.
-    subprocess_stream_limit: int = _env_int("CODEX_SUBPROCESS_STREAM_LIMIT", 8 * 1024 * 1024)
+    subprocess_stream_limit: int = _env_int("CODEX_SUBPROCESS_STREAM_LIMIT", 16 * 1024 * 1024)
+    # SSE keep-alive interval. Some clients (or proxies) enforce read timeouts on
+    # streaming responses; sending periodic SSE comments prevents idle disconnects.
+    sse_keepalive_seconds: int = _env_int("CODEX_SSE_KEEPALIVE_SECONDS", 2)
+
+    # Image input (OpenAI-style `content: [{"type":"image_url", ...}]`).
+    enable_image_input: bool = _env_bool("CODEX_ENABLE_IMAGE_INPUT", True)
+    max_image_count: int = _env_int("CODEX_MAX_IMAGE_COUNT", 4)
+    max_image_bytes: int = _env_int("CODEX_MAX_IMAGE_BYTES", 8 * 1024 * 1024)
 
     # CORS (comma-separated origins). Empty disables CORS.
     cors_origins: str = os.environ.get("CODEX_CORS_ORIGINS", "")
 
     # Compatibility: strip `</answer>` from model output for clients that parse
     # do(...)/finish(...) calls (e.g. Open-AutoGLM).
-    strip_answer_tags: bool = _env_bool("CODEX_STRIP_ANSWER_TAGS", False)
+    strip_answer_tags: bool = _env_bool("CODEX_STRIP_ANSWER_TAGS", True)
 
     # Logging / observability (prints prompts, events, and outputs to server logs).
     debug_log: bool = _env_bool("CODEX_DEBUG_LOG", False)

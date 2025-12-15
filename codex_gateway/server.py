@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+import base64
 import json
 import logging
+import os
+import tempfile
 import time
 import uuid
-from contextlib import aclosing
+from contextlib import aclosing, suppress
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,7 +16,16 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from .codex_cli import collect_codex_text_and_usage_from_events, iter_codex_events
 from .config import settings
-from .openai_compat import ChatCompletionRequest, ErrorResponse, messages_to_prompt
+from .openai_compat import ChatCompletionRequest, ErrorResponse, extract_image_urls, messages_to_prompt
+from .stream_json_cli import (
+    TextAssembler,
+    extract_claude_delta,
+    extract_cursor_agent_delta,
+    extract_gemini_delta,
+    extract_usage_from_claude_result,
+    extract_usage_from_gemini_result,
+    iter_stream_json_events,
+)
 
 app = FastAPI(title="codex-api-gateway", version="0.1.0")
 logger = logging.getLogger("uvicorn.error")
@@ -55,6 +68,34 @@ def _extract_reasoning_effort(req: ChatCompletionRequest) -> str | None:
     return None
 
 
+def _parse_provider_model(model: str) -> tuple[str, str | None]:
+    raw = (model or "").strip()
+    if not raw:
+        return "codex", None
+
+    for prefix in ("cursor-agent:", "cursor:"):
+        if raw.startswith(prefix):
+            inner = raw.split(":", 1)[1].strip()
+            return "cursor-agent", (inner or None)
+    if raw in {"cursor-agent", "cursor"}:
+        return "cursor-agent", None
+
+    for prefix in ("claude-code:", "claude:"):
+        if raw.startswith(prefix):
+            inner = raw.split(":", 1)[1].strip()
+            return "claude", (inner or None)
+    if raw in {"claude-code", "claude"}:
+        return "claude", None
+
+    if raw.startswith("gemini:"):
+        inner = raw.split(":", 1)[1].strip()
+        return "gemini", (inner or None)
+    if raw == "gemini":
+        return "gemini", None
+
+    return "codex", raw
+
+
 def _check_auth(authorization: str | None) -> None:
     token = settings.bearer_token
     if not token:
@@ -80,13 +121,15 @@ def _openai_error(message: str, *, status_code: int = 500) -> JSONResponse:
 def _maybe_strip_answer_tags(text: str) -> str:
     """
     Optional compatibility shim for clients that parse a single do(...)/finish(...)
-    expression and choke on trailing XML tags like </answer>.
+    expression and/or wrap messages with <think>/<answer> tags (e.g. Open-AutoGLM).
     """
     if not settings.strip_answer_tags:
         return text
     if not text:
         return text
-    return text.replace("</answer>", "")
+    for tag in ("<think>", "</think>", "<answer>", "</answer>"):
+        text = text.replace(tag, "")
+    return text.strip()
 
 
 def _truncate_for_log(text: str) -> str:
@@ -96,6 +139,72 @@ def _truncate_for_log(text: str) -> str:
     if len(text) <= limit:
         return text
     return f"{text[:limit]}\n... (truncated, {len(text)} chars total)"
+
+
+def _mime_to_ext(mime: str) -> str:
+    mime = (mime or "").strip().lower()
+    if mime in {"image/png", "png"}:
+        return "png"
+    if mime in {"image/jpeg", "image/jpg", "jpeg", "jpg"}:
+        return "jpg"
+    if mime in {"image/webp", "webp"}:
+        return "webp"
+    return "bin"
+
+
+def _decode_data_url(data_url: str) -> tuple[bytes, str]:
+    if not data_url.startswith("data:"):
+        raise ValueError("Unsupported image_url (expected data: URL)")
+    try:
+        header, payload = data_url.split(",", 1)
+    except ValueError as e:
+        raise ValueError("Invalid data: URL") from e
+
+    if ";base64" not in header:
+        raise ValueError("Unsupported data: URL encoding (expected base64)")
+
+    mime = header.removeprefix("data:").split(";", 1)[0].strip() or "application/octet-stream"
+    # base64 payload may contain newlines; strip whitespace.
+    payload = "".join(payload.split())
+    try:
+        data = base64.b64decode(payload, validate=False)
+    except Exception as e:
+        raise ValueError("Invalid base64 image payload") from e
+
+    return data, _mime_to_ext(mime)
+
+
+def _materialize_request_images(
+    req: ChatCompletionRequest, *, resp_id: str
+) -> tuple[tempfile.TemporaryDirectory | None, list[str]]:
+    if not settings.enable_image_input:
+        return None, []
+
+    urls = extract_image_urls(req.messages)
+    if not urls:
+        return None, []
+
+    max_count = max(settings.max_image_count, 0)
+    if max_count == 0:
+        return None, []
+
+    urls = urls[-max_count:]
+    tmpdir = tempfile.TemporaryDirectory(prefix="codex-gateway-images-")
+    paths: list[str] = []
+    for idx, url in enumerate(urls):
+        data, ext = _decode_data_url(url)
+        if settings.max_image_bytes > 0 and len(data) > settings.max_image_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Image too large ({len(data)} bytes > {settings.max_image_bytes})",
+            )
+        filename = f"{resp_id}-{idx}.{ext}"
+        path = os.path.join(tmpdir.name, filename)
+        with open(path, "wb") as f:
+            f.write(data)
+        paths.append(path)
+
+    return tmpdir, paths
 
 
 @app.get("/healthz")
@@ -133,7 +242,8 @@ async def chat_completions(
     _check_auth(authorization)
 
     requested_model = req.model or settings.default_model
-    model = settings.model_aliases.get(requested_model, requested_model)
+    resolved_model = settings.model_aliases.get(requested_model, requested_model)
+    provider, provider_model = _parse_provider_model(resolved_model)
     reasoning_effort = _extract_reasoning_effort(req) or settings.model_reasoning_effort
     prompt = messages_to_prompt(req.messages)
     if len(prompt) > settings.max_prompt_chars:
@@ -146,15 +256,29 @@ async def chat_completions(
     try:
         if settings.debug_log:
             logger.info(
-                "[%s] /v1/chat/completions model=%s resolved_model=%s stream=%s effort=%s prompt_chars=%d",
+                "[%s] /v1/chat/completions model=%s resolved_model=%s provider=%s stream=%s effort=%s prompt_chars=%d",
                 resp_id,
                 requested_model,
-                model,
+                resolved_model,
+                provider,
                 req.stream,
                 reasoning_effort,
                 len(prompt),
             )
             logger.info("[%s] prompt:\n%s", resp_id, _truncate_for_log(prompt))
+
+        tmpdir: tempfile.TemporaryDirectory | None = None
+        image_files: list[str] = []
+        if provider == "codex":
+            try:
+                tmpdir, image_files = _materialize_request_images(req, resp_id=resp_id)
+            except HTTPException:
+                raise
+            except Exception as e:
+                return _openai_error(f"Failed to decode image input: {e}", status_code=400)
+
+            if settings.debug_log and image_files:
+                logger.info("[%s] decoded_images=%d", resp_id, len(image_files))
 
         def _evt_log(evt: dict) -> None:
             if not settings.debug_log:
@@ -216,29 +340,130 @@ async def chat_completions(
             logger.warning("[%s] codex stderr: %s", resp_id, _truncate_for_log(line))
 
         if not req.stream:
-            async with sem:
-                events = iter_codex_events(
-                    prompt=prompt,
-                    model=model,
-                    cd=settings.workspace,
-                    sandbox=settings.sandbox,
-                    skip_git_repo_check=settings.skip_git_repo_check,
-                    model_reasoning_effort=reasoning_effort,
-                    approval_policy=settings.approval_policy,
-                    enable_search=settings.enable_search,
-                    add_dirs=settings.add_dirs,
-                    codex_cli_home=settings.codex_cli_home,
-                    timeout_seconds=settings.timeout_seconds,
-                    stream_limit=settings.subprocess_stream_limit,
-                    event_callback=_evt_log,
-                    stderr_callback=_stderr_log,
-                )
-                result = await collect_codex_text_and_usage_from_events(events)
-            text = _maybe_strip_answer_tags(result.text)
+            usage: dict[str, int] | None = None
+            try:
+                async with sem:
+                    if provider == "codex":
+                        codex_model = provider_model or settings.default_model
+                        events = iter_codex_events(
+                            prompt=prompt,
+                            model=codex_model,
+                            cd=settings.workspace,
+                            images=image_files,
+                            sandbox=settings.sandbox,
+                            skip_git_repo_check=settings.skip_git_repo_check,
+                            model_reasoning_effort=reasoning_effort,
+                            approval_policy=settings.approval_policy,
+                            enable_search=settings.enable_search,
+                            add_dirs=settings.add_dirs,
+                            codex_cli_home=settings.codex_cli_home,
+                            timeout_seconds=settings.timeout_seconds,
+                            stream_limit=settings.subprocess_stream_limit,
+                            event_callback=_evt_log,
+                            stderr_callback=_stderr_log,
+                        )
+                        result = await collect_codex_text_and_usage_from_events(events)
+                        text = result.text
+                        usage = result.usage
+                    elif provider == "cursor-agent":
+                        cursor_model = provider_model or settings.cursor_agent_model
+                        cmd = [
+                            settings.cursor_agent_bin,
+                            "-p",
+                            "--output-format",
+                            "stream-json",
+                            "--workspace",
+                            settings.workspace,
+                        ]
+                        if settings.cursor_agent_api_key:
+                            cmd.extend(["--api-key", settings.cursor_agent_api_key])
+                        if cursor_model:
+                            cmd.extend(["--model", cursor_model])
+                        if settings.cursor_agent_stream_partial_output:
+                            cmd.append("--stream-partial-output")
+                        cmd.append(prompt)
+
+                        assembler = TextAssembler()
+                        fallback_text: str | None = None
+                        async for evt in iter_stream_json_events(
+                            cmd=cmd,
+                            env=None,
+                            timeout_seconds=settings.timeout_seconds,
+                            stream_limit=settings.subprocess_stream_limit,
+                            event_callback=_evt_log,
+                            stderr_callback=_stderr_log,
+                        ):
+                            extract_cursor_agent_delta(evt, assembler)
+                            if evt.get("type") == "result" and isinstance(evt.get("result"), str):
+                                fallback_text = evt["result"]
+                        text = assembler.text or (fallback_text or "")
+                    elif provider == "claude":
+                        claude_model = provider_model or settings.claude_model
+                        cmd = [
+                            settings.claude_bin,
+                            "--verbose",
+                            "-p",
+                            "--output-format",
+                            "stream-json",
+                            "--add-dir",
+                            settings.workspace,
+                        ]
+                        for d in settings.add_dirs:
+                            cmd.extend(["--add-dir", d])
+                        if claude_model:
+                            cmd.extend(["--model", claude_model])
+                        cmd.append("--")
+                        cmd.append(prompt)
+
+                        assembler = TextAssembler()
+                        fallback_text = None
+                        async for evt in iter_stream_json_events(
+                            cmd=cmd,
+                            env=None,
+                            timeout_seconds=settings.timeout_seconds,
+                            stream_limit=settings.subprocess_stream_limit,
+                            event_callback=_evt_log,
+                            stderr_callback=_stderr_log,
+                        ):
+                            extract_claude_delta(evt, assembler)
+                            maybe_usage = extract_usage_from_claude_result(evt)
+                            if maybe_usage:
+                                usage = maybe_usage
+                            if evt.get("type") == "result" and isinstance(evt.get("result"), str):
+                                fallback_text = evt["result"]
+                        text = assembler.text or (fallback_text or "")
+                    elif provider == "gemini":
+                        gemini_model = provider_model or settings.gemini_model
+                        cmd = [settings.gemini_bin, "-o", "stream-json"]
+                        if gemini_model:
+                            cmd.extend(["-m", gemini_model])
+                        cmd.append(prompt)
+
+                        assembler = TextAssembler()
+                        async for evt in iter_stream_json_events(
+                            cmd=cmd,
+                            env=None,
+                            timeout_seconds=settings.timeout_seconds,
+                            stream_limit=settings.subprocess_stream_limit,
+                            event_callback=_evt_log,
+                            stderr_callback=_stderr_log,
+                        ):
+                            extract_gemini_delta(evt, assembler)
+                            maybe_usage = extract_usage_from_gemini_result(evt)
+                            if maybe_usage:
+                                usage = maybe_usage
+                        text = assembler.text
+                    else:
+                        raise RuntimeError(f"Unknown provider: {provider}")
+            finally:
+                if tmpdir is not None:
+                    tmpdir.cleanup()
+
+            text = _maybe_strip_answer_tags(text).strip()
             if settings.debug_log:
                 logger.info("[%s] response_chars=%d", resp_id, len(text))
                 logger.info("[%s] response:\n%s", resp_id, _truncate_for_log(text))
-            return {
+            response: dict = {
                 "id": resp_id,
                 "object": "chat.completion",
                 "created": created,
@@ -250,67 +475,196 @@ async def chat_completions(
                         "finish_reason": "stop",
                     }
                 ],
-                "usage": result.usage,
             }
+            if usage is not None:
+                response["usage"] = usage
+            return response
 
         async def sse_gen():
-            async with sem:
-                # initial role chunk
-                first = {
-                    "id": resp_id,
-                    "object": "chat.completion.chunk",
-                    "created": created,
-                    "model": model,
-                    "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
-                }
-                yield f"data: {json.dumps(first, ensure_ascii=False)}\n\n"
+            try:
+                async with sem:
+                    # initial role chunk
+                    first = {
+                        "id": resp_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": requested_model,
+                        "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+                    }
+                    yield f"data: {json.dumps(first, ensure_ascii=False)}\n\n"
+                    if provider == "codex":
+                        codex_model = provider_model or settings.default_model
+                        events = iter_codex_events(
+                            prompt=prompt,
+                            model=codex_model,
+                            cd=settings.workspace,
+                            images=image_files,
+                            sandbox=settings.sandbox,
+                            skip_git_repo_check=settings.skip_git_repo_check,
+                            model_reasoning_effort=reasoning_effort,
+                            approval_policy=settings.approval_policy,
+                            enable_search=settings.enable_search,
+                            add_dirs=settings.add_dirs,
+                            codex_cli_home=settings.codex_cli_home,
+                            timeout_seconds=settings.timeout_seconds,
+                            stream_limit=settings.subprocess_stream_limit,
+                            event_callback=_evt_log,
+                            stderr_callback=_stderr_log,
+                        )
+                    elif provider == "cursor-agent":
+                        cursor_model = provider_model or settings.cursor_agent_model
+                        cmd = [
+                            settings.cursor_agent_bin,
+                            "-p",
+                            "--output-format",
+                            "stream-json",
+                            "--workspace",
+                            settings.workspace,
+                        ]
+                        if settings.cursor_agent_api_key:
+                            cmd.extend(["--api-key", settings.cursor_agent_api_key])
+                        if cursor_model:
+                            cmd.extend(["--model", cursor_model])
+                        if settings.cursor_agent_stream_partial_output:
+                            cmd.append("--stream-partial-output")
+                        cmd.append(prompt)
+                        events = iter_stream_json_events(
+                            cmd=cmd,
+                            env=None,
+                            timeout_seconds=settings.timeout_seconds,
+                            stream_limit=settings.subprocess_stream_limit,
+                            event_callback=_evt_log,
+                            stderr_callback=_stderr_log,
+                        )
+                    elif provider == "claude":
+                        claude_model = provider_model or settings.claude_model
+                        cmd = [
+                            settings.claude_bin,
+                            "--verbose",
+                            "-p",
+                            "--output-format",
+                            "stream-json",
+                            "--add-dir",
+                            settings.workspace,
+                        ]
+                        for d in settings.add_dirs:
+                            cmd.extend(["--add-dir", d])
+                        if claude_model:
+                            cmd.extend(["--model", claude_model])
+                        cmd.append("--")
+                        cmd.append(prompt)
+                        events = iter_stream_json_events(
+                            cmd=cmd,
+                            env=None,
+                            timeout_seconds=settings.timeout_seconds,
+                            stream_limit=settings.subprocess_stream_limit,
+                            event_callback=_evt_log,
+                            stderr_callback=_stderr_log,
+                        )
+                    elif provider == "gemini":
+                        gemini_model = provider_model or settings.gemini_model
+                        cmd = [settings.gemini_bin, "-o", "stream-json"]
+                        if gemini_model:
+                            cmd.extend(["-m", gemini_model])
+                        cmd.append(prompt)
+                        events = iter_stream_json_events(
+                            cmd=cmd,
+                            env=None,
+                            timeout_seconds=settings.timeout_seconds,
+                            stream_limit=settings.subprocess_stream_limit,
+                            event_callback=_evt_log,
+                            stderr_callback=_stderr_log,
+                        )
+                    else:
+                        raise RuntimeError(f"Unknown provider: {provider}")
 
-                events = iter_codex_events(
-                    prompt=prompt,
-                    model=model,
-                    cd=settings.workspace,
-                    sandbox=settings.sandbox,
-                    skip_git_repo_check=settings.skip_git_repo_check,
-                    model_reasoning_effort=reasoning_effort,
-                    approval_policy=settings.approval_policy,
-                    enable_search=settings.enable_search,
-                    add_dirs=settings.add_dirs,
-                    codex_cli_home=settings.codex_cli_home,
-                    timeout_seconds=settings.timeout_seconds,
-                    stream_limit=settings.subprocess_stream_limit,
-                    event_callback=_evt_log,
-                    stderr_callback=_stderr_log,
-                )
-                async with aclosing(events):
-                    async for evt in events:
-                        if await request.is_disconnected():
-                            return
-                        if evt.get("type") == "item.completed":
-                            item = evt.get("item") or {}
-                            if item.get("type") == "agent_message":
-                                text = _maybe_strip_answer_tags(item.get("text") or "")
-                                if text:
+                    queue: asyncio.Queue[dict | None] = asyncio.Queue()
+                    assembler = TextAssembler()
+
+                    async def _pump_events() -> None:
+                        try:
+                            async with aclosing(events):
+                                async for evt in events:
+                                    await queue.put(evt)
+                        except Exception as e:
+                            await queue.put({"_gateway_error": str(e)})
+                        finally:
+                            await queue.put(None)
+
+                    pump_task = asyncio.create_task(_pump_events())
+                    keepalive = max(settings.sse_keepalive_seconds, 0)
+                    try:
+                        while True:
+                            if await request.is_disconnected():
+                                return
+
+                            try:
+                                if keepalive > 0:
+                                    evt = await asyncio.wait_for(queue.get(), timeout=keepalive)
+                                else:
+                                    evt = await queue.get()
+                            except (asyncio.TimeoutError, TimeoutError):
+                                # SSE comment line (ignored by OpenAI client) to keep the
+                                # connection alive and avoid client read timeouts.
+                                yield ": ping\n\n"
+                                continue
+
+                            if evt is None:
+                                break
+                            if isinstance(evt, dict) and evt.get("_gateway_error"):
+                                msg = str(evt.get("_gateway_error") or "")
+                                if msg:
                                     chunk = {
                                         "id": resp_id,
                                         "object": "chat.completion.chunk",
                                         "created": created,
                                         "model": requested_model,
-                                        "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}],
+                                        "choices": [{"index": 0, "delta": {"content": msg}, "finish_reason": None}],
                                     }
                                     yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                                break
+                            delta = ""
+                            if provider == "codex":
+                                if evt.get("type") == "item.completed":
+                                    item = evt.get("item") or {}
+                                    if item.get("type") == "agent_message":
+                                        delta = _maybe_strip_answer_tags(str(item.get("text") or ""))
+                            elif provider == "cursor-agent":
+                                delta = _maybe_strip_answer_tags(extract_cursor_agent_delta(evt, assembler))
+                            elif provider == "claude":
+                                delta = _maybe_strip_answer_tags(extract_claude_delta(evt, assembler))
+                            elif provider == "gemini":
+                                delta = _maybe_strip_answer_tags(extract_gemini_delta(evt, assembler))
 
-                end = {
-                    "id": resp_id,
-                    "object": "chat.completion.chunk",
-                    "created": created,
-                    "model": requested_model,
-                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-                }
-                yield f"data: {json.dumps(end, ensure_ascii=False)}\n\n"
-                yield "data: [DONE]\n\n"
+                            if delta:
+                                chunk = {
+                                    "id": resp_id,
+                                    "object": "chat.completion.chunk",
+                                    "created": created,
+                                    "model": requested_model,
+                                    "choices": [{"index": 0, "delta": {"content": delta}, "finish_reason": None}],
+                                }
+                                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                    finally:
+                        pump_task.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await pump_task
+
+                    end = {
+                        "id": resp_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": requested_model,
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                    }
+                    yield f"data: {json.dumps(end, ensure_ascii=False)}\n\n"
+                    yield "data: [DONE]\n\n"
+            finally:
+                if tmpdir is not None:
+                    tmpdir.cleanup()
 
         return StreamingResponse(sse_gen(), media_type="text/event-stream")
-    except TimeoutError:
+    except (asyncio.TimeoutError, TimeoutError):
         return _openai_error(f"codex exec timed out after {settings.timeout_seconds}s", status_code=504)
     except Exception as e:
         return _openai_error(str(e), status_code=500)

@@ -102,11 +102,30 @@ curl -N http://127.0.0.1:8000/v1/chat/completions \
 - `CODEX_TIMEOUT_SECONDS`: (default: `600`)
 - `CODEX_MAX_CONCURRENCY`: (default: `2`)
 - `CODEX_MAX_PROMPT_CHARS`: (default: `200000`)
-- `CODEX_SUBPROCESS_STREAM_LIMIT`: asyncio stream limit for `codex` subprocess pipes (default: `8388608`)
+- `CODEX_SUBPROCESS_STREAM_LIMIT`: asyncio stream limit for subprocess pipes (default: `8388608`)
 - `CODEX_CORS_ORIGINS`: comma-separated origins for CORS (default: empty/disabled)
+- `CODEX_SSE_KEEPALIVE_SECONDS`: send SSE keep-alives to prevent client read timeouts (default: `5`)
 - `CODEX_STRIP_ANSWER_TAGS`: `1/0` (default: `0`) strip `</answer>` for action-parsing clients (e.g. Open-AutoGLM)
+- `CODEX_ENABLE_IMAGE_INPUT`: `1/0` (default: `1`) decode OpenAI-style `image_url` parts and pass them to `codex exec --image`
+- `CODEX_MAX_IMAGE_COUNT`: (default: `4`)
+- `CODEX_MAX_IMAGE_BYTES`: (default: `8388608`)
 - `CODEX_DEBUG_LOG`: `1/0` (default: `0`) log prompt/events/response to server logs
 - `CODEX_LOG_MAX_CHARS`: truncate long log lines (default: `4000`)
+
+## Multi-provider (optional)
+
+If you have other agent CLIs installed, you can select them by prefixing `model`:
+
+- Codex CLI: `"gpt-5.2"` (default) or any Codex model id
+- Cursor Agent: `"cursor-agent:<model>"` or `"cursor:<model>"` (e.g. `cursor:sonnet-4-thinking`)
+- Claude Code: `"claude:<model>"` or `"claude-code:<model>"` (e.g. `claude:sonnet`)
+- Gemini CLI: `"gemini:<model>"` or `"gemini"` (e.g. `gemini:gemini-2.0-flash`)
+
+Optional env vars:
+
+- `CURSOR_AGENT_BIN`, `CLAUDE_BIN`, `GEMINI_BIN`: override the CLI binary names/paths
+- `CURSOR_AGENT_API_KEY` / `CURSOR_API_KEY`: Cursor authentication for `cursor-agent`
+- `CURSOR_AGENT_MODEL`, `CLAUDE_MODEL`, `GEMINI_MODEL`: default model when the prefix doesn’t include `:<model>`
 
 ## Security notes
 

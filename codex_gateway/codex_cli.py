@@ -28,6 +28,7 @@ def _build_codex_exec_cmd(
     prompt: str,
     model: str,
     cd: str,
+    images: list[str],
     sandbox: SandboxMode,
     approval_policy: ApprovalPolicy,
     enable_search: bool,
@@ -68,6 +69,9 @@ def _build_codex_exec_cmd(
         pass
     for d in add_dirs:
         cmd.extend(["--add-dir", d])
+    if images:
+        cmd.append("--image")
+        cmd.extend(images)
     if json_events:
         cmd.append("--json")
     cmd.append(prompt)
@@ -79,6 +83,7 @@ async def run_codex_final(
     prompt: str,
     model: str,
     cd: str,
+    images: list[str],
     sandbox: SandboxMode,
     skip_git_repo_check: bool,
     model_reasoning_effort: str | None,
@@ -93,6 +98,7 @@ async def run_codex_final(
         prompt=prompt,
         model=model,
         cd=cd,
+        images=images,
         sandbox=sandbox,
         approval_policy=approval_policy,
         enable_search=enable_search,
@@ -111,7 +117,7 @@ async def run_codex_final(
     )
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
-    except TimeoutError:
+    except (asyncio.TimeoutError, TimeoutError):
         proc.kill()
         await proc.wait()
         raise
@@ -127,6 +133,7 @@ async def iter_codex_events(
     prompt: str,
     model: str,
     cd: str,
+    images: list[str],
     sandbox: SandboxMode,
     skip_git_repo_check: bool,
     model_reasoning_effort: str | None,
@@ -144,6 +151,7 @@ async def iter_codex_events(
         prompt=prompt,
         model=model,
         cd=cd,
+        images=images,
         sandbox=sandbox,
         approval_policy=approval_policy,
         enable_search=enable_search,
@@ -203,7 +211,7 @@ async def iter_codex_events(
         while True:
             try:
                 line = await asyncio.wait_for(proc.stdout.readline(), timeout=timeout_seconds)
-            except TimeoutError:
+            except (asyncio.TimeoutError, TimeoutError):
                 proc.kill()
                 await proc.wait()
                 raise
