@@ -66,6 +66,23 @@ To allow “online access”, bind to `0.0.0.0` and put it behind a reverse prox
 uv run uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
+### Expose to the internet (Cloudflare Tunnel)
+
+If you want to provide an “online API” without binding to `0.0.0.0`, use a tunnel and keep the server on localhost:
+
+```bash
+export CODEX_GATEWAY_TOKEN=devtoken
+uv run uvicorn main:app --host 127.0.0.1 --port 8000
+```
+
+In another terminal:
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:8000
+```
+
+Keep `CODEX_GATEWAY_TOKEN` enabled, and consider Cloudflare Access / IP allowlists before exposing any sandbox other than `read-only`.
+
 ## API
 
 - `GET /healthz`
