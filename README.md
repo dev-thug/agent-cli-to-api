@@ -256,6 +256,8 @@ Optional env vars:
 - `CURSOR_AGENT_API_KEY` / `CURSOR_API_KEY`: Cursor authentication for `cursor-agent`
 - `CURSOR_AGENT_MODEL`, `CLAUDE_MODEL`, `GEMINI_MODEL`: default model when the prefix doesn’t include `:<model>`
 - `CURSOR_AGENT_WORKSPACE`: override `--workspace` just for `cursor-agent` (use an empty dir to avoid repo reads for automation workloads)
+- `CURSOR_AGENT_DISABLE_INDEXING`: `1/0` (default: `1`) pass `--disable-indexing` to `cursor-agent`
+- `CURSOR_AGENT_EXTRA_ARGS`: extra CLI flags passed to `cursor-agent` (e.g. `--endpoint ... --http-version 2`)
 
 ## Keywords (SEO)
 

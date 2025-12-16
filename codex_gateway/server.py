@@ -378,6 +378,8 @@ async def debug_config(authorization: str | None = Header(default=None)):
         "default_model": settings.default_model,
         "cursor_agent_model": settings.cursor_agent_model or "auto",
         "cursor_agent_workspace": settings.cursor_agent_workspace,
+        "cursor_agent_disable_indexing": settings.cursor_agent_disable_indexing,
+        "cursor_agent_extra_args": settings.cursor_agent_extra_args,
         "claude_model": settings.claude_model,
         "gemini_model": settings.gemini_model,
         "model_reasoning_effort": settings.model_reasoning_effort,
@@ -758,6 +760,10 @@ async def chat_completions(
                             "--workspace",
                             cursor_workspace,
                         ]
+                        if settings.cursor_agent_disable_indexing:
+                            cmd.append("--disable-indexing")
+                        if settings.cursor_agent_extra_args:
+                            cmd.extend(settings.cursor_agent_extra_args)
                         if settings.cursor_agent_api_key:
                             cmd.extend(["--api-key", settings.cursor_agent_api_key])
                         if cursor_model:
@@ -985,6 +991,10 @@ async def chat_completions(
                                 "--workspace",
                                 cursor_workspace,
                             ]
+                            if settings.cursor_agent_disable_indexing:
+                                cmd.append("--disable-indexing")
+                            if settings.cursor_agent_extra_args:
+                                cmd.extend(settings.cursor_agent_extra_args)
                             if settings.cursor_agent_api_key:
                                 cmd.extend(["--api-key", settings.cursor_agent_api_key])
                             if cursor_model:

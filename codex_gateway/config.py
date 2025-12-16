@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -138,6 +139,13 @@ class Settings:
     cursor_agent_api_key: str | None = os.environ.get("CURSOR_AGENT_API_KEY") or os.environ.get("CURSOR_API_KEY")
     cursor_agent_model: str | None = (_env_str("CURSOR_AGENT_MODEL", "").strip() or None)
     cursor_agent_stream_partial_output: bool = _env_bool("CURSOR_AGENT_STREAM_PARTIAL_OUTPUT", True)
+    # Cursor Agent may index the workspace; disabling indexing can reduce startup work for automation use-cases.
+    cursor_agent_disable_indexing: bool = _env_bool("CURSOR_AGENT_DISABLE_INDEXING", True)
+    # Extra args passed to `cursor-agent` (operator-controlled). Example:
+    #   CURSOR_AGENT_EXTRA_ARGS="--endpoint https://api2.cursor.sh --http-version 2"
+    cursor_agent_extra_args: list[str] = field(
+        default_factory=lambda: shlex.split(os.environ.get("CURSOR_AGENT_EXTRA_ARGS", "") or "")
+    )
 
     claude_bin: str = os.environ.get("CLAUDE_BIN", "claude")
     claude_model: str | None = (_env_str("CLAUDE_MODEL", "").strip() or None)
