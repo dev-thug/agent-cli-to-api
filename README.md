@@ -245,6 +245,12 @@ Claude OAuth direct mode:
 - `CLAUDE_OAUTH_BASE_URL`: token refresh base URL (default: `https://console.anthropic.com`)
 - `CLAUDE_OAUTH_CLIENT_ID`: override OAuth client id (default: built-in)
 - `CLAUDE_API_BASE_URL`: inference base URL (default: `https://api.anthropic.com`)
+
+To generate `CLAUDE_OAUTH_CREDS_PATH` without an API key:
+
+```bash
+uv run python -m codex_gateway.claude_oauth_login
+```
 - `CODEX_DEBUG_LOG`: `1/0` (default: `0`) legacy flag; if set and `CODEX_LOG_MODE` is unset, defaults to `qa`
 
 ## Multi-provider (optional)
