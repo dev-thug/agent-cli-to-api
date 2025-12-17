@@ -5,6 +5,7 @@ import base64
 import json
 import logging
 import os
+import re
 import tempfile
 import time
 import uuid
@@ -178,6 +179,26 @@ def _openai_error(message: str, *, status_code: int = 500) -> JSONResponse:
         }
     ).model_dump()
     return JSONResponse(status_code=status_code, content=payload)
+
+
+_UPSTREAM_STATUS_RE = re.compile(r"(?:\\bAPI Error:\\s*|\\bfailed:\\s*)(\\d{3})\\b")
+_GENERIC_STATUS_RE = re.compile(r"\\bstatus\\s*[=:]\\s*(\\d{3})\\b")
+
+
+def _extract_upstream_status_code(err: BaseException) -> int | None:
+    msg = str(err or "").strip()
+    if not msg:
+        return None
+    for rx in (_UPSTREAM_STATUS_RE, _GENERIC_STATUS_RE):
+        m = rx.search(msg)
+        if m:
+            try:
+                code = int(m.group(1))
+            except Exception:
+                continue
+            if 400 <= code <= 599:
+                return code
+    return None
 
 
 def _maybe_strip_answer_tags(text: str) -> str:
@@ -1355,6 +1376,11 @@ async def chat_completions(
     except (asyncio.TimeoutError, TimeoutError):
         logger.error("[%s] error status=504 timeout_seconds=%d", resp_id, settings.timeout_seconds)
         return _openai_error(f"codex exec timed out after {settings.timeout_seconds}s", status_code=504)
+    except HTTPException:
+        # Let FastAPI handle already-structured HTTP errors (auth, validation, etc.).
+        raise
     except Exception as e:
-        logger.error("[%s] error status=500 %s", resp_id, _truncate_for_log(str(e)))
-        return _openai_error(str(e), status_code=500)
+        upstream = _extract_upstream_status_code(e)
+        status = upstream or 500
+        logger.error("[%s] error status=%d %s", resp_id, status, _truncate_for_log(str(e)))
+        return _openai_error(str(e), status_code=status)
