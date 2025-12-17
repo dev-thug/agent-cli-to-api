@@ -24,9 +24,18 @@ from .codex_responses import (
     maybe_refresh_codex_auth,
 )
 from .config import settings
+from .claude_oauth import generate_oauth as claude_oauth_generate
+from .claude_oauth import iter_oauth_stream_events as iter_claude_oauth_events
 from .gemini_cloudcode import generate_cloudcode as gemini_cloudcode_generate
 from .gemini_cloudcode import iter_cloudcode_stream_events as iter_gemini_cloudcode_events
-from .openai_compat import ChatCompletionRequest, ChatMessage, ErrorResponse, extract_image_urls, messages_to_prompt
+from .openai_compat import (
+    ChatCompletionRequest,
+    ChatMessage,
+    ErrorResponse,
+    extract_image_urls,
+    messages_to_prompt,
+    normalize_message_content,
+)
 from .stream_json_cli import (
     TextAssembler,
     extract_claude_delta,
@@ -125,9 +134,9 @@ def _provider_default_model(provider: str) -> str | None:
     if provider == "cursor-agent":
         return settings.cursor_agent_model or "auto"
     if provider == "claude":
-        return settings.claude_model
+        return settings.claude_model or "sonnet"
     if provider == "gemini":
-        return settings.gemini_model
+        return settings.gemini_model or "gemini-2.5-pro"
     return None
 
 
@@ -318,7 +327,7 @@ def _materialize_request_images(
 async def _log_startup_config() -> None:
     # Intentionally omit secrets (tokens, API keys).
     logger.info(
-        "Gateway config: workspace=%s provider=%s allow_client_provider_override=%s allow_client_model_override=%s default_model=%s cursor_agent_model=%s claude_model=%s gemini_model=%s gemini_use_cloudcode_api=%s model_reasoning_effort=%s force_reasoning_effort=%s use_codex_responses_api=%s max_concurrency=%s sse_keepalive_seconds=%s strip_answer_tags=%s debug_log=%s",
+        "Gateway config: workspace=%s provider=%s allow_client_provider_override=%s allow_client_model_override=%s default_model=%s cursor_agent_model=%s claude_model=%s claude_use_oauth_api=%s claude_api_base_url=%s claude_oauth_base_url=%s claude_oauth_creds_path=%s gemini_model=%s gemini_use_cloudcode_api=%s model_reasoning_effort=%s force_reasoning_effort=%s use_codex_responses_api=%s max_concurrency=%s sse_keepalive_seconds=%s strip_answer_tags=%s debug_log=%s",
         settings.workspace,
         settings.provider,
         settings.allow_client_provider_override,
@@ -326,6 +335,10 @@ async def _log_startup_config() -> None:
         settings.default_model,
         settings.cursor_agent_model or "auto",
         settings.claude_model,
+        settings.claude_use_oauth_api,
+        settings.claude_api_base_url,
+        settings.claude_oauth_base_url,
+        settings.claude_oauth_creds_path,
         settings.gemini_model,
         settings.gemini_use_cloudcode_api,
         settings.model_reasoning_effort,
@@ -384,6 +397,11 @@ async def debug_config(authorization: str | None = Header(default=None)):
         "cursor_agent_disable_indexing": settings.cursor_agent_disable_indexing,
         "cursor_agent_extra_args": settings.cursor_agent_extra_args,
         "claude_model": settings.claude_model,
+        "claude_use_oauth_api": settings.claude_use_oauth_api,
+        "claude_api_base_url": settings.claude_api_base_url,
+        "claude_oauth_base_url": settings.claude_oauth_base_url,
+        "claude_oauth_creds_path": settings.claude_oauth_creds_path,
+        "claude_oauth_client_id": settings.claude_oauth_client_id,
         "gemini_model": settings.gemini_model,
         "gemini_use_cloudcode_api": settings.gemini_use_cloudcode_api,
         "gemini_cloudcode_base_url": settings.gemini_cloudcode_base_url,
@@ -406,6 +424,8 @@ async def debug_config(authorization: str | None = Header(default=None)):
         "disable_shell_tool": settings.disable_shell_tool,
         "disable_view_image_tool": settings.disable_view_image_tool,
         "debug_log": settings.debug_log,
+        "log_mode": settings.effective_log_mode(),
+        "log_events": settings.log_events,
         "log_max_chars": settings.log_max_chars,
     }
 
@@ -417,6 +437,8 @@ async def chat_completions(
     authorization: str | None = Header(default=None),
 ):
     _check_auth(authorization)
+
+    log_mode = settings.effective_log_mode()
 
     forced_provider = _normalize_provider(settings.provider)
     fallback_model = (
@@ -460,8 +482,10 @@ async def chat_completions(
 
     created = int(time.time())
     resp_id = f"chatcmpl-{uuid.uuid4().hex}"
+    t0 = time.time()
 
     image_urls = extract_image_urls(req.messages)
+    use_claude_oauth = bool(provider == "claude" and settings.claude_use_oauth_api)
     use_gemini_cloudcode = bool(provider == "gemini" and settings.gemini_use_cloudcode_api)
     use_codex_backend = bool(
         provider == "codex"
@@ -478,6 +502,8 @@ async def chat_completions(
         mode_label = "cli"
         if provider == "codex" and use_codex_backend:
             mode_label = "codex-responses"
+        elif provider == "claude" and use_claude_oauth:
+            mode_label = "claude-oauth"
         elif provider == "gemini" and use_gemini_cloudcode:
             mode_label = "gemini-cloudcode"
 
@@ -488,52 +514,34 @@ async def chat_completions(
             effort_source = "request"
         elif not default_effort:
             effort_source = "fallback"
-        if settings.debug_log:
-            logger.info(
-                "[%s] /v1/chat/completions model=%s resolved_model=%s provider=%s mode=%s stream=%s effort=%s prompt_chars=%d",
-                resp_id,
-                requested_model,
-                resolved_model,
-                provider,
-                mode_label,
-                req.stream,
-                reasoning_effort,
-                len(prompt),
-            )
-            eff_model = provider_model or _provider_default_model(provider) or ""
-            logger.info("[%s] provider_model effective=%s (client=%s)", resp_id, (eff_model or "<default>"), provider_model)
-            logger.info(
-                "[%s] reasoning_effort source=%s forced=%s request=%s default=%s",
-                resp_id,
-                effort_source,
-                forced_effort_raw,
-                request_effort_raw,
-                default_effort_raw,
-            )
-            logger.info("[%s] prompt:\n%s", resp_id, _truncate_for_log(prompt))
-        else:
-            logger.info(
-                "[%s] /v1/chat/completions model=%s resolved_model=%s provider=%s mode=%s stream=%s effort=%s effort_src=%s effort_req=%s effort_def=%s effort_forced=%s images=%d",
-                resp_id,
-                requested_model,
-                resolved_model,
-                provider,
-                mode_label,
-                req.stream,
-                reasoning_effort,
-                effort_source,
-                request_effort_raw,
-                default_effort_raw,
-                forced_effort_raw,
-                len(image_urls),
-            )
+        logger.info(
+            "[%s] request model=%s resolved=%s provider=%s mode=%s stream=%s effort=%s images=%d",
+            resp_id,
+            requested_model,
+            resolved_model,
+            provider,
+            mode_label,
+            req.stream,
+            reasoning_effort,
+            len(image_urls),
+        )
+        if log_mode == "qa":
+            q = ""
+            for m in reversed(req.messages):
+                if m.role == "user":
+                    q = normalize_message_content(m.content)
+                    break
+            if q:
+                logger.info("[%s] Q:\n%s", resp_id, _truncate_for_log(q))
+        elif log_mode == "full":
+            logger.info("[%s] PROMPT:\n%s", resp_id, _truncate_for_log(prompt))
 
         tmpdir: tempfile.TemporaryDirectory | None = None
         image_files: list[str] = []
         if provider == "codex":
             if use_codex_backend:
                 # No temp files needed; Codex backend accepts data: URLs directly.
-                if settings.debug_log and image_urls:
+                if (log_mode == "full" and image_urls) or (settings.log_events and image_urls):
                     for idx, url in enumerate(image_urls[-max(settings.max_image_count, 0) :]):
                         try:
                             data, ext = _decode_data_url(url)
@@ -550,7 +558,7 @@ async def chat_completions(
                 except Exception as e:
                     return _openai_error(f"Failed to decode image input: {e}", status_code=400)
 
-                if settings.debug_log and image_files:
+                if (log_mode == "full" and image_files) or (settings.log_events and image_files):
                     for idx, path in enumerate(image_files):
                         try:
                             size = os.path.getsize(path)
@@ -561,7 +569,7 @@ async def chat_completions(
                     logger.info("[%s] decoded_images=%d", resp_id, len(image_files))
 
         def _evt_log(evt: dict) -> None:
-            if not settings.debug_log:
+            if not settings.log_events:
                 return
             t = evt.get("type")
             if t == "response.created":
@@ -664,7 +672,7 @@ async def chat_completions(
                 return
 
         def _stderr_log(line: str) -> None:
-            if not settings.debug_log:
+            if not settings.log_events:
                 return
             logger.warning("[%s] codex stderr: %s", resp_id, _truncate_for_log(line))
 
@@ -705,7 +713,7 @@ async def chat_completions(
                                     headers=headers,
                                     payload=payload,
                                     timeout_seconds=settings.timeout_seconds,
-                                    event_callback=_evt_log if settings.debug_log else None,
+                                    event_callback=_evt_log if settings.log_events else None,
                                 )
                                 text, usage = await collect_codex_responses_text_and_usage(events)
                                 # Re-wrap usage into the same shape as codex exec path.
@@ -749,13 +757,12 @@ async def chat_completions(
                             else:
                                 fallback_model = settings.default_model
                                 if codex_model != fallback_model and _looks_like_unsupported_model_error(str(e)):
-                                    if settings.debug_log:
-                                        logger.warning(
-                                            "[%s] codex model unsupported: %s -> fallback=%s",
-                                            resp_id,
-                                            codex_model,
-                                            fallback_model,
-                                        )
+                                    logger.warning(
+                                        "[%s] codex model unsupported: %s -> fallback=%s",
+                                        resp_id,
+                                        codex_model,
+                                        fallback_model,
+                                    )
                                     result = await _run_codex_once(fallback_model)
                                 else:
                                     raise
@@ -763,7 +770,7 @@ async def chat_completions(
                         usage = result.usage
                     elif provider == "cursor-agent":
                         cursor_model = provider_model or settings.cursor_agent_model or "auto"
-                        if settings.debug_log:
+                        if settings.log_events:
                             src = "request" if provider_model else ("env" if settings.cursor_agent_model else "default")
                             logger.info("[%s] cursor-agent model=%s model_src=%s", resp_id, cursor_model, src)
                         cursor_workspace = settings.cursor_agent_workspace or settings.workspace
@@ -786,7 +793,7 @@ async def chat_completions(
                         if settings.cursor_agent_stream_partial_output:
                             cmd.append("--stream-partial-output")
                         cmd.append(prompt)
-                        if settings.debug_log:
+                        if settings.log_events:
                             logger.info("[%s] cursor-agent cmd=%s", resp_id, " ".join(cmd[:12] + (["..."] if len(cmd) > 12 else [])))
 
                         assembler = TextAssembler()
@@ -807,7 +814,7 @@ async def chat_completions(
                                 and isinstance(evt.get("model"), str)
                             ):
                                 reported_model = evt["model"]
-                                if settings.debug_log:
+                                if settings.log_events:
                                     logger.info(
                                         "[%s] cursor-agent init model=%s apiKeySource=%s permissionMode=%s session_id=%s",
                                         resp_id,
@@ -821,44 +828,62 @@ async def chat_completions(
                                 fallback_text = evt["result"]
                         text = assembler.text or (fallback_text or "")
                     elif provider == "claude":
-                        claude_model = provider_model or settings.claude_model
-                        cmd = [
-                            settings.claude_bin,
-                            "--verbose",
-                            "-p",
-                            "--output-format",
-                            "stream-json",
-                            "--add-dir",
-                            settings.workspace,
-                        ]
-                        for d in settings.add_dirs:
-                            cmd.extend(["--add-dir", d])
-                        if claude_model:
-                            cmd.extend(["--model", claude_model])
-                        cmd.append("--")
-                        cmd.append(prompt)
+                        claude_model = provider_model or settings.claude_model or "sonnet"
+                        if use_claude_oauth:
+                            if settings.log_events:
+                                logger.info(
+                                    "[%s] claude-oauth url=%s/v1/messages model=%s creds=%s",
+                                    resp_id,
+                                    settings.claude_api_base_url,
+                                    claude_model,
+                                    settings.claude_oauth_creds_path,
+                                )
+                            msgs = _maybe_inject_automation_guard_messages(req.messages)
+                            req2 = ChatCompletionRequest(
+                                model=req.model,
+                                messages=msgs,
+                                stream=req.stream,
+                                max_tokens=req.max_tokens,
+                            )
+                            text, usage = await claude_oauth_generate(req=req2, model_name=claude_model)
+                        else:
+                            cmd = [
+                                settings.claude_bin,
+                                "--verbose",
+                                "-p",
+                                "--output-format",
+                                "stream-json",
+                                "--add-dir",
+                                settings.workspace,
+                            ]
+                            for d in settings.add_dirs:
+                                cmd.extend(["--add-dir", d])
+                            if claude_model:
+                                cmd.extend(["--model", claude_model])
+                            cmd.append("--")
+                            cmd.append(prompt)
 
-                        assembler = TextAssembler()
-                        fallback_text = None
-                        async for evt in iter_stream_json_events(
-                            cmd=cmd,
-                            env=None,
-                            timeout_seconds=settings.timeout_seconds,
-                            stream_limit=settings.subprocess_stream_limit,
-                            event_callback=_evt_log,
-                            stderr_callback=_stderr_log,
-                        ):
-                            extract_claude_delta(evt, assembler)
-                            maybe_usage = extract_usage_from_claude_result(evt)
-                            if maybe_usage:
-                                usage = maybe_usage
-                            if evt.get("type") == "result" and isinstance(evt.get("result"), str):
-                                fallback_text = evt["result"]
-                        text = assembler.text or (fallback_text or "")
+                            assembler = TextAssembler()
+                            fallback_text = None
+                            async for evt in iter_stream_json_events(
+                                cmd=cmd,
+                                env=None,
+                                timeout_seconds=settings.timeout_seconds,
+                                stream_limit=settings.subprocess_stream_limit,
+                                event_callback=_evt_log,
+                                stderr_callback=_stderr_log,
+                            ):
+                                extract_claude_delta(evt, assembler)
+                                maybe_usage = extract_usage_from_claude_result(evt)
+                                if maybe_usage:
+                                    usage = maybe_usage
+                                if evt.get("type") == "result" and isinstance(evt.get("result"), str):
+                                    fallback_text = evt["result"]
+                            text = assembler.text or (fallback_text or "")
                     elif provider == "gemini":
                         gemini_model = provider_model or settings.gemini_model or "gemini-2.5-pro"
                         if use_gemini_cloudcode:
-                            if settings.debug_log:
+                            if settings.log_events:
                                 logger.info(
                                     "[%s] gemini-cloudcode url=%s/v1internal:generateContent model=%s creds=%s",
                                     resp_id,
@@ -899,11 +924,29 @@ async def chat_completions(
             finally:
                 if tmpdir is not None:
                     tmpdir.cleanup()
+                assembled = _maybe_strip_answer_tags(assembled_text).strip()
+                duration_ms = int((time.time() - t0) * 1000)
+                usage_str = f" usage={stream_usage}" if isinstance(stream_usage, dict) else ""
+                logger.info(
+                    "[%s] stream_end status=200 duration_ms=%d chars=%d%s",
+                    resp_id,
+                    duration_ms,
+                    len(assembled),
+                    usage_str,
+                )
+                if log_mode == "qa" and assembled:
+                    logger.info("[%s] A:\n%s", resp_id, _truncate_for_log(assembled))
+                elif log_mode == "full" and assembled:
+                    logger.info("[%s] RESPONSE:\n%s", resp_id, _truncate_for_log(assembled))
 
             text = _maybe_strip_answer_tags(text).strip()
-            if settings.debug_log:
-                logger.info("[%s] response_chars=%d", resp_id, len(text))
-                logger.info("[%s] response:\n%s", resp_id, _truncate_for_log(text))
+            duration_ms = int((time.time() - t0) * 1000)
+            usage_str = f" usage={usage}" if isinstance(usage, dict) else ""
+            logger.info("[%s] response status=200 duration_ms=%d chars=%d%s", resp_id, duration_ms, len(text), usage_str)
+            if log_mode == "qa" and text:
+                logger.info("[%s] A:\n%s", resp_id, _truncate_for_log(text))
+            elif log_mode == "full" and text:
+                logger.info("[%s] RESPONSE:\n%s", resp_id, _truncate_for_log(text))
             response: dict = {
                 "id": resp_id,
                 "object": "chat.completion",
@@ -922,6 +965,8 @@ async def chat_completions(
             return response
 
         async def sse_gen():
+            assembled_text = ""
+            stream_usage: dict[str, int] | None = None
             try:
                 async with sem:
                     # initial role chunk
@@ -987,7 +1032,7 @@ async def chat_completions(
                                     headers=headers,
                                     payload=payload,
                                     timeout_seconds=settings.timeout_seconds,
-                                    event_callback=_evt_log if settings.debug_log else None,
+                                    event_callback=_evt_log if settings.log_events else None,
                                 )
                             else:
                                 events = iter_codex_events(
@@ -1012,7 +1057,7 @@ async def chat_completions(
                         elif provider == "cursor-agent":
                             cursor_model = provider_model or settings.cursor_agent_model or "auto"
                             cursor_init_logged = False
-                            if settings.debug_log:
+                            if settings.log_events:
                                 src = "request" if provider_model else ("env" if settings.cursor_agent_model else "default")
                                 logger.info("[%s] cursor-agent model=%s model_src=%s", resp_id, cursor_model, src)
                             cursor_workspace = settings.cursor_agent_workspace or settings.workspace
@@ -1035,7 +1080,7 @@ async def chat_completions(
                             if settings.cursor_agent_stream_partial_output:
                                 cmd.append("--stream-partial-output")
                             cmd.append(prompt)
-                            if settings.debug_log:
+                            if settings.log_events:
                                 logger.info("[%s] cursor-agent cmd=%s", resp_id, " ".join(cmd[:12] + (["..."] if len(cmd) > 12 else [])))
                             events = iter_stream_json_events(
                                 cmd=cmd,
@@ -1046,34 +1091,52 @@ async def chat_completions(
                                 stderr_callback=_stderr_log,
                             )
                         elif provider == "claude":
-                            claude_model = provider_model or settings.claude_model
-                            cmd = [
-                                settings.claude_bin,
-                                "--verbose",
-                                "-p",
-                                "--output-format",
-                                "stream-json",
-                                "--add-dir",
-                                settings.workspace,
-                            ]
-                            for d in settings.add_dirs:
-                                cmd.extend(["--add-dir", d])
-                            if claude_model:
-                                cmd.extend(["--model", claude_model])
-                            cmd.append("--")
-                            cmd.append(prompt)
-                            events = iter_stream_json_events(
-                                cmd=cmd,
-                                env=None,
-                                timeout_seconds=settings.timeout_seconds,
-                                stream_limit=settings.subprocess_stream_limit,
-                                event_callback=_evt_log,
-                                stderr_callback=_stderr_log,
-                            )
+                            claude_model = provider_model or settings.claude_model or "sonnet"
+                            if use_claude_oauth:
+                                if settings.log_events:
+                                    logger.info(
+                                        "[%s] claude-oauth url=%s/v1/messages model=%s creds=%s",
+                                        resp_id,
+                                        settings.claude_api_base_url,
+                                        claude_model,
+                                        settings.claude_oauth_creds_path,
+                                    )
+                                msgs = _maybe_inject_automation_guard_messages(req.messages)
+                                req2 = ChatCompletionRequest(
+                                    model=req.model,
+                                    messages=msgs,
+                                    stream=req.stream,
+                                    max_tokens=req.max_tokens,
+                                )
+                                events = iter_claude_oauth_events(req=req2, model_name=claude_model)
+                            else:
+                                cmd = [
+                                    settings.claude_bin,
+                                    "--verbose",
+                                    "-p",
+                                    "--output-format",
+                                    "stream-json",
+                                    "--add-dir",
+                                    settings.workspace,
+                                ]
+                                for d in settings.add_dirs:
+                                    cmd.extend(["--add-dir", d])
+                                if claude_model:
+                                    cmd.extend(["--model", claude_model])
+                                cmd.append("--")
+                                cmd.append(prompt)
+                                events = iter_stream_json_events(
+                                    cmd=cmd,
+                                    env=None,
+                                    timeout_seconds=settings.timeout_seconds,
+                                    stream_limit=settings.subprocess_stream_limit,
+                                    event_callback=_evt_log,
+                                    stderr_callback=_stderr_log,
+                                )
                         elif provider == "gemini":
                             gemini_model = provider_model or settings.gemini_model or "gemini-2.5-pro"
                             if use_gemini_cloudcode:
-                                if settings.debug_log:
+                                if settings.log_events:
                                     logger.info(
                                         "[%s] gemini-cloudcode url=%s/v1internal:streamGenerateContent?alt=sse model=%s creds=%s",
                                         resp_id,
@@ -1088,7 +1151,7 @@ async def chat_completions(
                                     model_name=gemini_model,
                                     reasoning_effort=reasoning_effort,
                                     timeout_seconds=settings.timeout_seconds,
-                                    event_callback=_evt_log if settings.debug_log else None,
+                                    event_callback=_evt_log if settings.log_events else None,
                                 )
                             else:
                                 cmd = [settings.gemini_bin, "-o", "stream-json"]
@@ -1148,13 +1211,12 @@ async def chat_completions(
                                         and not sent_content
                                         and _looks_like_unsupported_model_error(msg)
                                     ):
-                                        if settings.debug_log:
-                                            logger.warning(
-                                                "[%s] codex model unsupported: %s -> fallback=%s",
-                                                resp_id,
-                                                attempt_models[0],
-                                                attempt_models[1],
-                                            )
+                                        logger.warning(
+                                            "[%s] codex model unsupported: %s -> fallback=%s",
+                                            resp_id,
+                                            attempt_models[0],
+                                            attempt_models[1],
+                                        )
                                         should_retry = True
                                         break
 
@@ -1187,6 +1249,16 @@ async def chat_completions(
                                         ):
                                             delta = _maybe_strip_answer_tags(evt["text"])
                                         if evt.get("type") == "response.completed":
+                                            resp = evt.get("response") or {}
+                                            u = resp.get("usage") if isinstance(resp, dict) else None
+                                            if isinstance(u, dict):
+                                                prompt_tokens = int(u.get("input_tokens") or 0)
+                                                completion_tokens = int(u.get("output_tokens") or 0)
+                                                stream_usage = {
+                                                    "prompt_tokens": prompt_tokens,
+                                                    "completion_tokens": completion_tokens,
+                                                    "total_tokens": prompt_tokens + completion_tokens,
+                                                }
                                             break
                                     else:
                                         if evt.get("type") == "item.completed":
@@ -1202,7 +1274,7 @@ async def chat_completions(
                                         and isinstance(evt.get("model"), str)
                                     ):
                                         cursor_init_logged = True
-                                        if settings.debug_log:
+                                        if settings.log_events:
                                             logger.info(
                                                 "[%s] cursor-agent init model=%s apiKeySource=%s permissionMode=%s session_id=%s",
                                                 resp_id,
@@ -1219,6 +1291,7 @@ async def chat_completions(
 
                                 if delta:
                                     sent_content = True
+                                    assembled_text += delta
                                     chunk = {
                                         "id": resp_id,
                                         "object": "chat.completion.chunk",

@@ -190,6 +190,18 @@ class Settings:
 
     claude_bin: str = os.environ.get("CLAUDE_BIN", "claude")
     claude_model: str | None = (_env_str("CLAUDE_MODEL", "").strip() or None)
+    # Claude direct OAuth mode (CLIProxyAPI-style). When enabled, the gateway calls the
+    # upstream Anthropic HTTP API directly, using a locally cached OAuth access token.
+    # This avoids subprocess overhead and supports true SSE streaming.
+    claude_use_oauth_api: bool = _env_bool("CLAUDE_USE_OAUTH_API", False)
+    claude_oauth_creds_path: str = os.path.expanduser(
+        _env_str("CLAUDE_OAUTH_CREDS_PATH", "~/.claude/oauth_creds.json").strip() or "~/.claude/oauth_creds.json"
+    )
+    # OAuth refresh endpoint is hosted on the Anthropic Console domain.
+    claude_oauth_base_url: str = _env_str("CLAUDE_OAUTH_BASE_URL", "https://console.anthropic.com").strip()
+    claude_oauth_client_id: str = _env_str("CLAUDE_OAUTH_CLIENT_ID", "").strip()
+    # Inference endpoint base URL.
+    claude_api_base_url: str = _env_str("CLAUDE_API_BASE_URL", "https://api.anthropic.com").strip()
 
     gemini_bin: str = os.environ.get("GEMINI_BIN", "gemini")
     gemini_model: str | None = (_env_str("GEMINI_MODEL", "").strip() or None)
@@ -230,9 +242,20 @@ class Settings:
     # do(...)/finish(...) calls (e.g. Open-AutoGLM).
     strip_answer_tags: bool = _env_bool("CODEX_STRIP_ANSWER_TAGS", True)
 
-    # Logging / observability (prints prompts, events, and outputs to server logs).
+    # Logging / observability.
+    # - summary: one line per request/response
+    # - qa: include last USER message + assistant output
+    # - full: include full prompt text + full assistant output
+    log_mode: str = _env_str("CODEX_LOG_MODE", "").strip().lower()
     debug_log: bool = _env_bool("CODEX_DEBUG_LOG", False)
+    log_events: bool = _env_bool("CODEX_LOG_EVENTS", False)
     log_max_chars: int = _env_int("CODEX_LOG_MAX_CHARS", 4000)
+
+    def effective_log_mode(self) -> str:
+        mode = (self.log_mode or "").strip().lower()
+        if mode:
+            return mode
+        return "qa" if self.debug_log else "summary"
 
 
 settings = Settings()

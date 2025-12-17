@@ -9,7 +9,7 @@ Think of it as **LiteLLM for agent CLIs**: you point existing OpenAI SDKs/tools 
 Supported backends:
 - OpenAI Codex (defaults to backend `/responses` for vision; falls back to `codex exec`)
 - Cursor Agent CLI (`cursor-agent`)
-- Claude Code CLI (`claude`)
+- Claude Code CLI (`claude`) or Claude OAuth direct (set `CLAUDE_USE_OAUTH_API=1`)
 - Gemini CLI (`gemini`) or Gemini CloudCode direct (set `GEMINI_USE_CLOUDCODE_API=1`)
 
 Why this exists:
@@ -139,7 +139,7 @@ curl -N http://127.0.0.1:8000/v1/chat/completions \
 
 ### Example (vision / screenshot)
 
-When `CODEX_DEBUG_LOG=1`, the gateway logs `image[0] ext=... bytes=...` and `decoded_images=N` so you can confirm images are being received/decoded.
+When `CODEX_LOG_MODE=full` (or `CODEX_LOG_EVENTS=1`), the gateway logs `image[0] ext=... bytes=...` and `decoded_images=N` so you can confirm images are being received/decoded.
 
 ```bash
 python - <<'PY' > /tmp/payload.json
@@ -235,8 +235,17 @@ console.log(resp.choices[0].message.content);
 - `CODEX_ENABLE_IMAGE_INPUT`: `1/0` (default: `1`) decode OpenAI-style `image_url` parts and pass them to `codex exec --image`
 - `CODEX_MAX_IMAGE_COUNT`: (default: `4`)
 - `CODEX_MAX_IMAGE_BYTES`: (default: `8388608`)
-- `CODEX_DEBUG_LOG`: `1/0` (default: `0`) log prompt/events/response to server logs
-- `CODEX_LOG_MAX_CHARS`: truncate long log lines (default: `4000`)
+- `CODEX_LOG_MODE`: `summary|qa|full` (default: `summary`) log blocks (`qa` shows last USER + assistant; `full` shows the full prompt)
+- `CODEX_LOG_EVENTS`: `1/0` (default: `0`) log raw CLI/backend events (very noisy)
+- `CODEX_LOG_MAX_CHARS`: truncate long log blocks (default: `4000`)
+
+Claude OAuth direct mode:
+- `CLAUDE_USE_OAUTH_API`: `1/0` (default: `0`) call Anthropic HTTP API directly instead of spawning `claude`
+- `CLAUDE_OAUTH_CREDS_PATH`: OAuth cache path (default: `~/.claude/oauth_creds.json`)
+- `CLAUDE_OAUTH_BASE_URL`: token refresh base URL (default: `https://console.anthropic.com`)
+- `CLAUDE_OAUTH_CLIENT_ID`: override OAuth client id (default: built-in)
+- `CLAUDE_API_BASE_URL`: inference base URL (default: `https://api.anthropic.com`)
+- `CODEX_DEBUG_LOG`: `1/0` (default: `0`) legacy flag; if set and `CODEX_LOG_MODE` is unset, defaults to `qa`
 
 ## Multi-provider (optional)
 
