@@ -952,7 +952,7 @@ async def chat_completions(
 
         async def sse_gen():
             assembled_text = ""
-            stream_usage: dict[str, int] | None = None
+            stream_usage: dict[str, object] | None = None
             try:
                 async with sem:
                     # initial role chunk
@@ -1244,6 +1244,12 @@ async def chat_completions(
                                                     "prompt_tokens": prompt_tokens,
                                                     "completion_tokens": completion_tokens,
                                                     "total_tokens": prompt_tokens + completion_tokens,
+                                                    "prompt_tokens_details": u.get("input_tokens_details")
+                                                    if isinstance(u.get("input_tokens_details"), dict)
+                                                    else {},
+                                                    "completion_tokens_details": u.get("output_tokens_details")
+                                                    if isinstance(u.get("output_tokens_details"), dict)
+                                                    else {},
                                                 }
                                             break
                                     else:

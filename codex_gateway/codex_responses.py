@@ -338,9 +338,9 @@ async def iter_codex_responses_events(
 
 async def collect_codex_responses_text_and_usage(
     events: AsyncIterator[dict[str, Any]],
-) -> tuple[str, dict[str, int] | None]:
+) -> tuple[str, dict[str, Any] | None]:
     chunks: list[str] = []
-    usage: dict[str, int] | None = None
+    usage: dict[str, Any] | None = None
 
     async for evt in events:
         t = evt.get("type")
@@ -359,6 +359,9 @@ async def collect_codex_responses_text_and_usage(
                     "prompt_tokens": prompt_tokens,
                     "completion_tokens": completion_tokens,
                     "total_tokens": prompt_tokens + completion_tokens,
+                    # Preserve backend-provided details when available (helps verify reasoning effort).
+                    "prompt_tokens_details": u.get("input_tokens_details") if isinstance(u.get("input_tokens_details"), dict) else {},
+                    "completion_tokens_details": u.get("output_tokens_details") if isinstance(u.get("output_tokens_details"), dict) else {},
                 }
             break
 
