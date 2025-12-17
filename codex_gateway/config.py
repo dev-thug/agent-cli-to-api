@@ -54,6 +54,110 @@ def _autoload_dotenv() -> None:
 
 _autoload_dotenv()
 
+def _apply_preset() -> None:
+    """
+    Apply an opinionated preset by setting default env vars (without overriding explicitly-set env).
+    This keeps the "happy path" config tiny, while still allowing full tuning via env overrides.
+    """
+
+    preset = (os.environ.get("CODEX_PRESET") or "").strip().lower().replace("_", "-")
+    if not preset:
+        return
+
+    presets: dict[str, dict[str, str]] = {
+        # Best defaults for local OpenAI-compatible API usage (fast + safe).
+        "codex-fast": {
+            "CODEX_PROVIDER": "codex",
+            "CODEX_MODEL": "gpt-5.2",
+            "CODEX_MODEL_REASONING_EFFORT": "low",
+            "CODEX_USE_CODEX_RESPONSES_API": "1",
+            "CODEX_SANDBOX": "read-only",
+            "CODEX_APPROVAL_POLICY": "never",
+            "CODEX_SKIP_GIT_REPO_CHECK": "1",
+            "CODEX_DISABLE_SHELL_TOOL": "1",
+            "CODEX_DISABLE_VIEW_IMAGE_TOOL": "1",
+            "CODEX_SSE_KEEPALIVE_SECONDS": "2",
+            "CODEX_LOG_MODE": "qa",
+            "CODEX_LOG_MAX_CHARS": "4000",
+            "CODEX_LOG_EVENTS": "0",
+            "CODEX_ALLOW_CLIENT_PROVIDER_OVERRIDE": "0",
+            "CODEX_ALLOW_CLIENT_MODEL_OVERRIDE": "0",
+        },
+        # Allow request-side provider prefixes (cursor:/claude:/gemini:) in `model`.
+        "multi-fast": {
+            "CODEX_PROVIDER": "auto",
+            "CODEX_MODEL": "gpt-5.2",
+            "CODEX_MODEL_REASONING_EFFORT": "low",
+            "CODEX_USE_CODEX_RESPONSES_API": "1",
+            "CODEX_SANDBOX": "read-only",
+            "CODEX_APPROVAL_POLICY": "never",
+            "CODEX_SKIP_GIT_REPO_CHECK": "1",
+            "CODEX_DISABLE_SHELL_TOOL": "1",
+            "CODEX_DISABLE_VIEW_IMAGE_TOOL": "1",
+            "CODEX_SSE_KEEPALIVE_SECONDS": "2",
+            "CODEX_LOG_MODE": "qa",
+            "CODEX_LOG_MAX_CHARS": "4000",
+            "CODEX_LOG_EVENTS": "0",
+            # Explicitly allow provider prefixes even if CODEX_PROVIDER changes later.
+            "CODEX_ALLOW_CLIENT_PROVIDER_OVERRIDE": "1",
+            "CODEX_ALLOW_CLIENT_MODEL_OVERRIDE": "1",
+        },
+        # Open-AutoGLM / phone automation focused.
+        "autoglm-phone": {
+            "CODEX_PROVIDER": "codex",
+            "CODEX_MODEL": "gpt-5.2",
+            "CODEX_MODEL_REASONING_EFFORT": "low",
+            "CODEX_USE_CODEX_RESPONSES_API": "1",
+            "CODEX_SANDBOX": "read-only",
+            "CODEX_APPROVAL_POLICY": "never",
+            "CODEX_SKIP_GIT_REPO_CHECK": "1",
+            "CODEX_DISABLE_SHELL_TOOL": "1",
+            "CODEX_DISABLE_VIEW_IMAGE_TOOL": "1",
+            "CODEX_STRIP_ANSWER_TAGS": "1",
+            "CODEX_SSE_KEEPALIVE_SECONDS": "2",
+            "CODEX_LOG_MODE": "qa",
+            "CODEX_LOG_MAX_CHARS": "8000",
+            "CODEX_LOG_EVENTS": "0",
+            "CODEX_ALLOW_CLIENT_PROVIDER_OVERRIDE": "0",
+            "CODEX_ALLOW_CLIENT_MODEL_OVERRIDE": "0",
+        },
+        # Force cursor-agent provider, keep it "API-like" by disabling indexing by default.
+        "cursor-auto": {
+            "CODEX_PROVIDER": "cursor-agent",
+            "CURSOR_AGENT_MODEL": "auto",
+            "CURSOR_AGENT_DISABLE_INDEXING": "1",
+            "CODEX_LOG_MODE": "qa",
+            "CODEX_LOG_MAX_CHARS": "4000",
+            "CODEX_LOG_EVENTS": "0",
+        },
+        # Claude direct OAuth (no subprocess).
+        "claude-oauth": {
+            "CODEX_PROVIDER": "claude",
+            "CLAUDE_USE_OAUTH_API": "1",
+            "CODEX_LOG_MODE": "qa",
+            "CODEX_LOG_MAX_CHARS": "4000",
+            "CODEX_LOG_EVENTS": "0",
+        },
+        # Gemini Cloud Code Assist backend (no subprocess).
+        "gemini-cloudcode": {
+            "CODEX_PROVIDER": "gemini",
+            "GEMINI_USE_CLOUDCODE_API": "1",
+            "CODEX_LOG_MODE": "qa",
+            "CODEX_LOG_MAX_CHARS": "4000",
+            "CODEX_LOG_EVENTS": "0",
+        },
+    }
+
+    conf = presets.get(preset)
+    if conf is None:
+        return
+
+    for key, value in conf.items():
+        os.environ.setdefault(key, value)
+
+
+_apply_preset()
+
 
 def _apply_preset_env() -> None:
     """
@@ -195,7 +299,7 @@ class Settings:
     )
 
     # Codex CLI options.
-    default_model: str = os.environ.get("CODEX_MODEL", "gpt-5.1")
+    default_model: str = os.environ.get("CODEX_MODEL", "gpt-5.2")
     # Some local Codex configs default to xhigh, which is not accepted by all models.
     model_reasoning_effort: str | None = (
         _env_str("CODEX_MODEL_REASONING_EFFORT", "low").strip() or None

@@ -928,7 +928,7 @@ async def chat_completions(
                 duration_ms = int((time.time() - t0) * 1000)
                 usage_str = f" usage={stream_usage}" if isinstance(stream_usage, dict) else ""
                 logger.info(
-                    "[%s] stream_end status=200 duration_ms=%d chars=%d%s",
+                    "[%s] response status=200 duration_ms=%d chars=%d%s",
                     resp_id,
                     duration_ms,
                     len(assembled),
@@ -1324,6 +1324,8 @@ async def chat_completions(
 
         return StreamingResponse(sse_gen(), media_type="text/event-stream")
     except (asyncio.TimeoutError, TimeoutError):
+        logger.error("[%s] error status=504 timeout_seconds=%d", resp_id, settings.timeout_seconds)
         return _openai_error(f"codex exec timed out after {settings.timeout_seconds}s", status_code=504)
     except Exception as e:
+        logger.error("[%s] error status=500 %s", resp_id, _truncate_for_log(str(e)))
         return _openai_error(str(e), status_code=500)

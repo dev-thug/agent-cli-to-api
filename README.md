@@ -213,6 +213,7 @@ uv run agent-cli-to-api --preset codex-fast
 
 Supported presets:
 - `codex-fast`
+- `multi-fast` (allow request-side provider prefixes like `cursor:...`)
 - `autoglm-phone`
 - `cursor-auto`
 - `claude-oauth`
