@@ -71,6 +71,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optionally load environment variables from this .env file.",
     )
     parser.add_argument(
+        "--preset",
+        default=os.environ.get("CODEX_PRESET"),
+        help="Optional config preset (sets recommended env defaults).",
+    )
+    parser.add_argument(
         "--no-env",
         action="store_true",
         help="Disable auto-loading .env from the current directory.",
@@ -96,6 +101,9 @@ def main(argv: list[str] | None = None) -> None:
             break
         if not loaded:
             print("[agent-cli-to-api] no .env found; using process environment")
+
+    if args.preset:
+        os.environ["CODEX_PRESET"] = str(args.preset)
 
     uvicorn.run(
         "codex_gateway.server:app",

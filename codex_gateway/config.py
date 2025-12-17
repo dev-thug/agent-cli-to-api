@@ -55,6 +55,72 @@ def _autoload_dotenv() -> None:
 _autoload_dotenv()
 
 
+def _apply_preset_env() -> None:
+    """
+    Optional opinionated presets to reduce env surface area.
+
+    Set `CODEX_PRESET` to one of the supported values; this will set a small set of
+    environment variables via `os.environ.setdefault` (explicit env always wins).
+    """
+    preset = (os.environ.get("CODEX_PRESET") or "").strip().lower()
+    if not preset:
+        return
+
+    presets: dict[str, dict[str, str]] = {
+        # Default for local OpenAI-compatible usage with real SSE streaming.
+        "codex-fast": {
+            "CODEX_PROVIDER": "codex",
+            "CODEX_USE_CODEX_RESPONSES_API": "1",
+            "CODEX_MODEL_REASONING_EFFORT": "low",
+            "CODEX_DISABLE_SHELL_TOOL": "1",
+            "CODEX_DISABLE_VIEW_IMAGE_TOOL": "1",
+            "CODEX_SSE_KEEPALIVE_SECONDS": "2",
+            "CODEX_LOG_MODE": "qa",
+        },
+        # Open-AutoGLM style phone UI automation (action parsing + screenshots).
+        "autoglm-phone": {
+            "CODEX_PROVIDER": "codex",
+            "CODEX_MODEL": "gpt-5.2",
+            "CODEX_USE_CODEX_RESPONSES_API": "1",
+            "CODEX_MODEL_REASONING_EFFORT": "low",
+            "CODEX_DISABLE_SHELL_TOOL": "1",
+            "CODEX_DISABLE_VIEW_IMAGE_TOOL": "1",
+            "CODEX_STRIP_ANSWER_TAGS": "1",
+            "CODEX_SSE_KEEPALIVE_SECONDS": "2",
+            "CODEX_LOG_MODE": "qa",
+        },
+        # Cursor Agent via CLI (avoid indexing by default).
+        "cursor-auto": {
+            "CODEX_PROVIDER": "cursor-agent",
+            "CURSOR_AGENT_MODEL": "auto",
+            "CURSOR_AGENT_DISABLE_INDEXING": "1",
+            "CODEX_LOG_MODE": "qa",
+        },
+        # Claude direct HTTP + SSE (requires OAuth creds file).
+        "claude-oauth": {
+            "CODEX_PROVIDER": "claude",
+            "CLAUDE_USE_OAUTH_API": "1",
+            "CLAUDE_MODEL": "sonnet",
+            "CODEX_LOG_MODE": "qa",
+        },
+        # Gemini direct HTTP + SSE (CloudCode; requires Gemini CLI login state).
+        "gemini-cloudcode": {
+            "CODEX_PROVIDER": "gemini",
+            "GEMINI_USE_CLOUDCODE_API": "1",
+            "CODEX_LOG_MODE": "qa",
+        },
+    }
+
+    chosen = presets.get(preset)
+    if not chosen:
+        return
+    for k, v in chosen.items():
+        os.environ.setdefault(k, v)
+
+
+_apply_preset_env()
+
+
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.environ.get(name)
     if raw is None:

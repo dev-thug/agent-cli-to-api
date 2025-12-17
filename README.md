@@ -199,6 +199,25 @@ console.log(resp.choices[0].message.content);
 
 ## Configuration (env vars)
 
+If you only want a minimal setup, use a preset:
+
+```bash
+export CODEX_PRESET=codex-fast
+```
+
+Or:
+
+```bash
+uv run agent-cli-to-api --preset codex-fast
+```
+
+Supported presets:
+- `codex-fast`
+- `autoglm-phone`
+- `cursor-auto`
+- `claude-oauth`
+- `gemini-cloudcode`
+
 - `CODEX_NO_DOTENV`: `1/0` (default: `0`) disable auto-loading `.env` when running `uvicorn main:app`
 - `CODEX_WORKSPACE`: directory passed to `codex exec --cd`
 - `CODEX_CLI_HOME`: override HOME for the `codex` subprocess (default: `./.codex-gateway-home`)
