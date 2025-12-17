@@ -444,7 +444,11 @@ async def chat_completions(
     fallback_model = (
         _provider_default_model(forced_provider if forced_provider != "auto" else "codex") or settings.default_model
     )
-    requested_model = (req.model or fallback_model).strip()
+    client_model = (req.model or "").strip()
+    # If the operator forces a provider and disallows client model override, the client-provided
+    # `model` is treated as a compatibility placeholder and ignored for backend selection.
+    client_model_ignored = bool(forced_provider != "auto" and not settings.allow_client_model_override)
+    requested_model = (fallback_model if client_model_ignored else (client_model or fallback_model)).strip()
     resolved_model = settings.model_aliases.get(requested_model, requested_model)
     parsed_provider, provider_model = _parse_provider_model(resolved_model)
     if settings.allow_client_provider_override or forced_provider == "auto":
@@ -515,7 +519,7 @@ async def chat_completions(
         elif not default_effort:
             effort_source = "fallback"
         logger.info(
-            "[%s] request model=%s resolved=%s provider=%s mode=%s stream=%s effort=%s images=%d",
+            "[%s] request model=%s resolved=%s provider=%s mode=%s stream=%s effort=%s images=%d client_model=%s ignored=%s",
             resp_id,
             requested_model,
             resolved_model,
@@ -524,7 +528,12 @@ async def chat_completions(
             req.stream,
             reasoning_effort,
             len(image_urls),
+            client_model or "<empty>",
+            client_model_ignored,
         )
+        if settings.debug_log:
+            eff = provider_model or _provider_default_model(provider) or "<default>"
+            logger.info("[%s] provider_model effective=%s (client=%s)", resp_id, eff, provider_model or "<none>")
         if log_mode == "qa":
             q = ""
             for m in reversed(req.messages):

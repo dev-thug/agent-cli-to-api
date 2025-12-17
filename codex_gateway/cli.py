@@ -44,11 +44,6 @@ def _default_env_candidates() -> list[Path]:
     cwd_env = Path.cwd() / ".env"
     if cwd_env.exists() and cwd_env.is_file():
         candidates.append(cwd_env)
-    # If invoked outside the project directory, fall back to the repo root where this
-    # package lives (no-op when installed without a bundled .env).
-    repo_env = Path(__file__).resolve().parents[1] / ".env"
-    if repo_env.exists() and repo_env.is_file() and repo_env not in candidates:
-        candidates.append(repo_env)
     return candidates
 
 
