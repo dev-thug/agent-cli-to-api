@@ -374,7 +374,14 @@ def _maybe_print_markdown(
         _RICH_CONSOLE = Console(stderr=True)
 
     console: Console = _RICH_CONSOLE  # type: ignore[assignment]
-    payload = _truncate_for_log(text).rstrip("\n")
+    # For Panel display, use a much larger limit or no limit
+    # Rich Panel can handle long text gracefully
+    panel_limit = max(settings.log_max_chars * 10, 50000)  # 10x default or 50k
+    if len(text) > panel_limit:
+        payload = f"{text[:panel_limit]}\n\n... (truncated, {len(text):,} chars total)"
+    else:
+        payload = text
+    payload = payload.rstrip("\n")
     short = _short_id(resp_id)
     
     # Use different styles for Q vs A
@@ -883,11 +890,29 @@ async def chat_completions(
             eff = provider_model or _provider_default_model(provider) or "<default>"
             logger.info("[%s] provider_model effective=%s (client=%s)", resp_id, eff, provider_model or "<none>")
         if log_mode == "qa":
-            q = ""
-            for m in reversed(req.messages):
+            # Collect all user messages (not just the last one)
+            user_messages = []
+            for m in req.messages:
                 if m.role == "user":
-                    q = normalize_message_content(m.content)
-                    break
+                    content = normalize_message_content(m.content)
+                    if content:
+                        user_messages.append(content)
+            # Also check for system message that might contain instructions
+            system_parts = []
+            for m in req.messages:
+                if m.role == "system":
+                    content = normalize_message_content(m.content)
+                    if content:
+                        system_parts.append(content)
+            
+            # Combine system + user messages
+            q_parts = []
+            if system_parts:
+                q_parts.append("--- System ---\n" + "\n".join(system_parts))
+            if user_messages:
+                q_parts.append("--- User ---\n" + "\n".join(user_messages))
+            
+            q = "\n\n".join(q_parts) if q_parts else ""
             if q:
                 if not _maybe_print_markdown(resp_id, "Q", q):
                     logger.info("[%s] Q:\n%s", resp_id, _truncate_for_log(q))
