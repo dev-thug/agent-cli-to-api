@@ -379,29 +379,31 @@ def _materialize_request_images(
 @app.on_event("startup")
 async def _log_startup_config() -> None:
     # Intentionally omit secrets (tokens, API keys).
-    logger.info(
-        "Gateway config: workspace=%s provider=%s allow_client_provider_override=%s allow_client_model_override=%s default_model=%s cursor_agent_model=%s claude_model=%s claude_use_oauth_api=%s claude_api_base_url=%s claude_oauth_base_url=%s claude_oauth_creds_path=%s gemini_model=%s gemini_use_cloudcode_api=%s model_reasoning_effort=%s force_reasoning_effort=%s use_codex_responses_api=%s max_concurrency=%s sse_keepalive_seconds=%s strip_answer_tags=%s debug_log=%s",
-        settings.workspace,
-        settings.provider,
-        settings.allow_client_provider_override,
-        settings.allow_client_model_override,
-        settings.default_model,
-        settings.cursor_agent_model or "auto",
-        settings.claude_model,
-        settings.claude_use_oauth_api,
-        settings.claude_api_base_url,
-        settings.claude_oauth_base_url,
-        settings.claude_oauth_creds_path,
-        settings.gemini_model,
-        settings.gemini_use_cloudcode_api,
-        settings.model_reasoning_effort,
-        settings.force_reasoning_effort,
-        settings.use_codex_responses_api,
-        settings.max_concurrency,
-        settings.sse_keepalive_seconds,
-        settings.strip_answer_tags,
-        settings.debug_log,
-    )
+    items: list[tuple[str, object]] = [
+        ("workspace", settings.workspace),
+        ("provider", settings.provider),
+        ("default_model", settings.default_model),
+        ("model_reasoning_effort", settings.model_reasoning_effort),
+        ("force_reasoning_effort", settings.force_reasoning_effort),
+        ("allow_client_provider_override", settings.allow_client_provider_override),
+        ("allow_client_model_override", settings.allow_client_model_override),
+        ("use_codex_responses_api", settings.use_codex_responses_api),
+        ("max_concurrency", settings.max_concurrency),
+        ("sse_keepalive_seconds", settings.sse_keepalive_seconds),
+        ("strip_answer_tags", settings.strip_answer_tags),
+        ("debug_log", settings.debug_log),
+        ("cursor_agent_model", settings.cursor_agent_model or "auto"),
+        ("claude_model", settings.claude_model),
+        ("claude_use_oauth_api", settings.claude_use_oauth_api),
+        ("claude_api_base_url", settings.claude_api_base_url),
+        ("claude_oauth_base_url", settings.claude_oauth_base_url),
+        ("claude_oauth_creds_path", settings.claude_oauth_creds_path),
+        ("gemini_model", settings.gemini_model),
+        ("gemini_use_cloudcode_api", settings.gemini_use_cloudcode_api),
+    ]
+    width = max(len(k) for k, _ in items)
+    rendered = "Gateway config:\n" + "\n".join(f"  {k:<{width}} = {v}" for k, v in items)
+    logger.info(rendered)
 
 
 @app.on_event("shutdown")
