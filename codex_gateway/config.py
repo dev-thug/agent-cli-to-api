@@ -78,7 +78,7 @@ def _apply_preset() -> None:
             "CODEX_DISABLE_SHELL_TOOL": "1",
             "CODEX_DISABLE_VIEW_IMAGE_TOOL": "1",
             "CODEX_SSE_KEEPALIVE_SECONDS": "2",
-            "CODEX_MAX_CONCURRENCY": "20",  # HTTP API, maximize throughput
+            "CODEX_MAX_CONCURRENCY": "100",  # HTTP API, maximize throughput
             "CODEX_LOG_MODE": "qa",
             "CODEX_LOG_MAX_CHARS": "4000",
             "CODEX_LOG_EVENTS": "0",
@@ -137,7 +137,7 @@ def _apply_preset() -> None:
             "CURSOR_AGENT_MODEL": "composer-1",
             "CURSOR_AGENT_DISABLE_INDEXING": "1",
             "CURSOR_AGENT_WORKSPACE": "/tmp/cursor-empty-workspace",
-            "CODEX_MAX_CONCURRENCY": "10",  # subprocess-based but still parallelizable
+            "CODEX_MAX_CONCURRENCY": "100",  # subprocess-based but still parallelizable
             "CODEX_LOG_MODE": "qa",
             "CODEX_LOG_MAX_CHARS": "4000",
             "CODEX_LOG_EVENTS": "0",
@@ -146,7 +146,7 @@ def _apply_preset() -> None:
         "claude-oauth": {
             "CODEX_PROVIDER": "claude",
             "CLAUDE_USE_OAUTH_API": "1",
-            "CODEX_MAX_CONCURRENCY": "20",  # HTTP API, maximize throughput
+            "CODEX_MAX_CONCURRENCY": "100",  # HTTP API, maximize throughput
             "CODEX_LOG_MODE": "qa",
             "CODEX_LOG_MAX_CHARS": "4000",
             "CODEX_LOG_EVENTS": "0",
@@ -156,7 +156,7 @@ def _apply_preset() -> None:
             "CODEX_PROVIDER": "gemini",
             "GEMINI_USE_CLOUDCODE_API": "1",
             "GEMINI_MODEL": "gemini-3-flash-preview",
-            "CODEX_MAX_CONCURRENCY": "20",  # HTTP API, maximize throughput
+            "CODEX_MAX_CONCURRENCY": "100",  # HTTP API, maximize throughput
             "CODEX_LOG_MODE": "qa",
             "CODEX_LOG_MAX_CHARS": "4000",
             "CODEX_LOG_EVENTS": "0",
@@ -229,7 +229,7 @@ def _apply_preset_env() -> None:
             "CODEX_PROVIDER": "claude",
             "CLAUDE_USE_OAUTH_API": "1",
             "CLAUDE_MODEL": "sonnet",
-            "CODEX_MAX_CONCURRENCY": "20",  # HTTP API, maximize throughput
+            "CODEX_MAX_CONCURRENCY": "100",  # HTTP API, maximize throughput
             "CODEX_LOG_MODE": "qa",
         },
         # Gemini direct HTTP + SSE (CloudCode; requires Gemini CLI login state).
@@ -437,7 +437,7 @@ class Settings:
     # Hard safety caps.
     max_prompt_chars: int = _env_int("CODEX_MAX_PROMPT_CHARS", 200_000)
     timeout_seconds: int = _env_int("CODEX_TIMEOUT_SECONDS", 600)
-    max_concurrency: int = _env_int("CODEX_MAX_CONCURRENCY", 2)
+    max_concurrency: int = _env_int("CODEX_MAX_CONCURRENCY", 100)
     # asyncio StreamReader limit for the Codex subprocess pipes. The default (64KiB)
     # is often too small for NDJSON events that can contain large assistant/tool text.
     subprocess_stream_limit: int = _env_int("CODEX_SUBPROCESS_STREAM_LIMIT", 16 * 1024 * 1024)
