@@ -197,6 +197,34 @@ def _is_expired(expiry_date_ms: int | None, *, skew_seconds: int = 60) -> bool:
     return expiry_date_ms <= (now_ms + skew_seconds * 1000)
 
 
+async def warmup_gemini_caches(*, timeout_seconds: int = 30) -> dict[str, str | None]:
+    """
+    Pre-warm OAuth token and project_id caches at startup.
+    Returns a dict with status info for logging.
+    """
+    import logging
+    _logger = logging.getLogger("uvicorn.error")
+    
+    result: dict[str, str | None] = {"access_token": None, "project_id": None}
+    t0 = time.time()
+    
+    try:
+        access = await get_gemini_access_token(timeout_seconds=timeout_seconds)
+        result["access_token"] = "cached"
+        t1 = time.time()
+        _logger.info("[gemini-warmup] access_token ready in %dms", int((t1 - t0) * 1000))
+        
+        project_id = await resolve_gemini_project_id(access_token=access, timeout_seconds=timeout_seconds)
+        result["project_id"] = project_id
+        t2 = time.time()
+        _logger.info("[gemini-warmup] project_id=%s ready in %dms", project_id, int((t2 - t1) * 1000))
+        _logger.info("[gemini-warmup] total warmup: %dms", int((t2 - t0) * 1000))
+    except Exception as e:
+        _logger.warning("[gemini-warmup] failed: %s", str(e))
+    
+    return result
+
+
 async def _refresh_access_token(
     *,
     refresh_token: str,
@@ -335,8 +363,9 @@ async def resolve_gemini_project_id(*, access_token: str, timeout_seconds: int) 
 
         _CACHED_PROJECT_ID = project_id
 
-        # Optional: persist for faster future startups (disabled by default).
-        if os.environ.get("GEMINI_CLOUDCODE_PERSIST_CACHE"):
+        # Persist project_id for faster future startups (enabled by default).
+        # Disable with GEMINI_CLOUDCODE_NO_PERSIST_CACHE=1
+        if not os.environ.get("GEMINI_CLOUDCODE_NO_PERSIST_CACHE"):
             p = Path(creds_path).expanduser()
             try:
                 raw = json.loads(p.read_text(encoding="utf-8"))

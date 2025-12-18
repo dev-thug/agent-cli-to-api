@@ -23,12 +23,14 @@ from .codex_responses import (
     iter_codex_responses_events,
     load_codex_auth,
     maybe_refresh_codex_auth,
+    warmup_codex_auth,
 )
 from .config import settings
 from .claude_oauth import generate_oauth as claude_oauth_generate
 from .claude_oauth import iter_oauth_stream_events as iter_claude_oauth_events
 from .gemini_cloudcode import generate_cloudcode as gemini_cloudcode_generate
 from .gemini_cloudcode import iter_cloudcode_stream_events as iter_gemini_cloudcode_events
+from .gemini_cloudcode import warmup_gemini_caches
 from .http_client import aclose_all as _aclose_http_clients
 from .openai_compat import (
     ChatCompletionRequest,
@@ -404,6 +406,24 @@ async def _log_startup_config() -> None:
     width = max(len(k) for k, _ in items)
     rendered = "Gateway config:\n" + "\n".join(f"  {k:<{width}} = {v}" for k, v in items)
     logger.info(rendered)
+
+
+@app.on_event("startup")
+async def _warmup_caches() -> None:
+    """Pre-warm OAuth/project caches at startup to reduce first-request latency."""
+    provider = _normalize_provider(settings.provider)
+    
+    # Ensure cursor-agent workspace exists
+    if provider == "cursor-agent" and settings.cursor_agent_workspace:
+        os.makedirs(settings.cursor_agent_workspace, exist_ok=True)
+    
+    # Warmup Codex auth if using codex provider
+    if provider == "codex" and settings.use_codex_responses_api:
+        await warmup_codex_auth(codex_cli_home=settings.codex_cli_home)
+    
+    # Warmup Gemini caches if using gemini provider
+    if provider == "gemini" and settings.gemini_use_cloudcode_api:
+        await warmup_gemini_caches(timeout_seconds=30)
 
 
 @app.on_event("shutdown")

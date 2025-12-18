@@ -89,6 +89,27 @@ async def _refresh_access_token(
         return resp.json()
 
 
+async def warmup_codex_auth(*, codex_cli_home: str | None) -> dict[str, str | None]:
+    """
+    Pre-warm Codex auth cache at startup.
+    Returns a dict with status info for logging.
+    """
+    import logging
+    _logger = logging.getLogger("uvicorn.error")
+    
+    t0 = time.time()
+    auth = load_codex_auth(codex_cli_home=codex_cli_home)
+    token = auth.api_key or auth.access_token
+    t1 = time.time()
+    
+    if token:
+        _logger.info("[codex-warmup] auth ready in %dms (has_token=True)", int((t1 - t0) * 1000))
+        return {"status": "ready", "has_token": "true"}
+    else:
+        _logger.warning("[codex-warmup] no auth token found in %dms", int((t1 - t0) * 1000))
+        return {"status": "no_token", "has_token": "false"}
+
+
 async def maybe_refresh_codex_auth(
     *,
     codex_cli_home: str | None,
@@ -171,8 +192,15 @@ def _prompt_dir() -> Path:
     return Path(__file__).with_name("codex_instructions")
 
 
+_INSTRUCTIONS_CACHE: dict[str, str] = {}
+
+
 def _load_prompt_file(filename: str) -> str:
-    return (_prompt_dir() / filename).read_text(encoding="utf-8")
+    if filename in _INSTRUCTIONS_CACHE:
+        return _INSTRUCTIONS_CACHE[filename]
+    content = (_prompt_dir() / filename).read_text(encoding="utf-8")
+    _INSTRUCTIONS_CACHE[filename] = content
+    return content
 
 
 def codex_instructions_for_model(model_name: str) -> str:

@@ -78,6 +78,7 @@ def _apply_preset() -> None:
             "CODEX_DISABLE_SHELL_TOOL": "1",
             "CODEX_DISABLE_VIEW_IMAGE_TOOL": "1",
             "CODEX_SSE_KEEPALIVE_SECONDS": "2",
+            "CODEX_MAX_CONCURRENCY": "20",  # HTTP API, maximize throughput
             "CODEX_LOG_MODE": "qa",
             "CODEX_LOG_MAX_CHARS": "4000",
             "CODEX_LOG_EVENTS": "0",
@@ -133,8 +134,10 @@ def _apply_preset() -> None:
         },
         "cursor-auto": {
             "CODEX_PROVIDER": "cursor-agent",
-            "CURSOR_AGENT_MODEL": "auto",
+            "CURSOR_AGENT_MODEL": "composer-1",
             "CURSOR_AGENT_DISABLE_INDEXING": "1",
+            "CURSOR_AGENT_WORKSPACE": "/tmp/cursor-empty-workspace",
+            "CODEX_MAX_CONCURRENCY": "10",  # subprocess-based but still parallelizable
             "CODEX_LOG_MODE": "qa",
             "CODEX_LOG_MAX_CHARS": "4000",
             "CODEX_LOG_EVENTS": "0",
@@ -152,6 +155,7 @@ def _apply_preset() -> None:
             "CODEX_PROVIDER": "gemini",
             "GEMINI_USE_CLOUDCODE_API": "1",
             "GEMINI_MODEL": "gemini-3-flash-preview",
+            "CODEX_MAX_CONCURRENCY": "20",  # HTTP API, maximize throughput
             "CODEX_LOG_MODE": "qa",
             "CODEX_LOG_MAX_CHARS": "4000",
             "CODEX_LOG_EVENTS": "0",
@@ -189,6 +193,7 @@ def _apply_preset_env() -> None:
             "CODEX_DISABLE_SHELL_TOOL": "1",
             "CODEX_DISABLE_VIEW_IMAGE_TOOL": "1",
             "CODEX_SSE_KEEPALIVE_SECONDS": "2",
+            "CODEX_MAX_CONCURRENCY": "20",
             "CODEX_LOG_MODE": "qa",
         },
         # Open-AutoGLM style phone UI automation (action parsing + screenshots).
@@ -212,8 +217,10 @@ def _apply_preset_env() -> None:
         },
         "cursor-auto": {
             "CODEX_PROVIDER": "cursor-agent",
-            "CURSOR_AGENT_MODEL": "auto",
+            "CURSOR_AGENT_MODEL": "composer-1",
             "CURSOR_AGENT_DISABLE_INDEXING": "1",
+            "CURSOR_AGENT_WORKSPACE": "/tmp/cursor-empty-workspace",
+            "CODEX_MAX_CONCURRENCY": "10",
             "CODEX_LOG_MODE": "qa",
         },
         # Claude direct HTTP + SSE (requires OAuth creds file).
@@ -228,6 +235,7 @@ def _apply_preset_env() -> None:
             "CODEX_PROVIDER": "gemini",
             "GEMINI_USE_CLOUDCODE_API": "1",
             "GEMINI_MODEL": "gemini-3-flash-preview",
+            "CODEX_MAX_CONCURRENCY": "20",
             "CODEX_LOG_MODE": "qa",
         },
     }
