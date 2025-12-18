@@ -380,7 +380,8 @@ def _maybe_print_markdown(
     # Use different styles for Q vs A
     if label == "Q":
         style = "cyan"
-        title = f"📝 Question [{short}]"
+        char_count = len(text)
+        title = f"📝 Question [{short}] 📏 {char_count:,} chars"
     elif label == "A":
         style = "green"
         parts = [f"✅ Answer [{short}]"]
@@ -582,29 +583,48 @@ async def _log_startup_config() -> None:
     claude_effective_model = cli_config.default_model or settings.claude_model
     claude_source = "CLI settings.json" if cli_config.base_url else "default"
     
-    items: list[tuple[str, object]] = [
-        ("workspace", settings.workspace),
-        ("provider", settings.provider),
-        ("default_model", settings.default_model),
-        ("model_reasoning_effort", settings.model_reasoning_effort),
-        ("force_reasoning_effort", settings.force_reasoning_effort),
-        ("allow_client_provider_override", settings.allow_client_provider_override),
-        ("allow_client_model_override", settings.allow_client_model_override),
-        ("use_codex_responses_api", settings.use_codex_responses_api),
-        ("max_concurrency", settings.max_concurrency),
-        ("sse_keepalive_seconds", settings.sse_keepalive_seconds),
-        ("strip_answer_tags", settings.strip_answer_tags),
-        ("debug_log", settings.debug_log),
-        ("cursor_agent_model", settings.cursor_agent_model or "auto"),
-        ("claude_model", claude_effective_model),
-        ("claude_use_oauth_api", settings.claude_use_oauth_api),
-        ("claude_effective_url", f"{claude_effective_url} ({claude_source})"),
-        ("claude_oauth_creds_path", settings.claude_oauth_creds_path),
-        ("gemini_model", settings.gemini_model),
-        ("gemini_use_cloudcode_api", settings.gemini_use_cloudcode_api),
+    items: list[tuple[str, object, str]] = [
+        ("provider", settings.provider, "cyan"),
+        ("max_concurrency", settings.max_concurrency, "green"),
+        ("claude_model", claude_effective_model, "yellow"),
+        ("claude_effective_url", f"{claude_effective_url}", "blue"),
+        ("config_source", claude_source, "dim"),
     ]
-    width = max(len(k) for k, _ in items)
-    rendered = "Gateway config:\n" + "\n".join(f"  {k:<{width}} = {v}" for k, v in items)
+    
+    # Try rich table first
+    try:
+        from rich.console import Console
+        from rich.table import Table
+        from rich.panel import Panel
+        
+        global _RICH_CONSOLE
+        if _RICH_CONSOLE is None:
+            _RICH_CONSOLE = Console(stderr=True)
+        
+        console: Console = _RICH_CONSOLE  # type: ignore[assignment]
+        
+        table = Table(show_header=False, box=None, padding=(0, 2))
+        table.add_column("Key", style="dim")
+        table.add_column("Value")
+        
+        for key, value, style in items:
+            table.add_row(key, f"[{style}]{value}[/{style}]")
+        
+        console.print(Panel(
+            table,
+            title="🚀 Agent CLI Gateway",
+            subtitle=f"📍 http://{settings.host}:{settings.port}",
+            border_style="green",
+            expand=False,
+        ))
+        return
+    except Exception:
+        pass
+    
+    # Fallback to plain logging
+    plain_items = [(k, v) for k, v, _ in items]
+    width = max(len(k) for k, _ in plain_items)
+    rendered = "Gateway config:\n" + "\n".join(f"  {k:<{width}} = {v}" for k, v in plain_items)
     logger.info(rendered)
 
 
