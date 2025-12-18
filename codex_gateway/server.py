@@ -575,21 +575,53 @@ def _materialize_request_images(
 @app.on_event("startup")
 async def _log_startup_config() -> None:
     # Intentionally omit secrets (tokens, API keys).
-    from .claude_oauth import get_claude_cli_config
+    provider = _normalize_provider(settings.provider)
     
-    # Check for Claude CLI config to show actual endpoint
-    cli_config = get_claude_cli_config()
-    claude_effective_url = cli_config.base_url or settings.claude_api_base_url
-    claude_effective_model = cli_config.default_model or settings.claude_model
-    claude_source = "CLI settings.json" if cli_config.base_url else "default"
-    
+    # Common items for all providers
     items: list[tuple[str, object, str]] = [
-        ("provider", settings.provider, "cyan"),
+        ("provider", settings.provider, "cyan bold"),
         ("max_concurrency", settings.max_concurrency, "green"),
-        ("claude_model", claude_effective_model, "yellow"),
-        ("claude_effective_url", f"{claude_effective_url}", "blue"),
-        ("config_source", claude_source, "dim"),
     ]
+    
+    # Provider-specific config
+    if provider == "codex":
+        mode = "responses API" if settings.use_codex_responses_api else "CLI"
+        items.extend([
+            ("mode", mode, "yellow"),
+            ("model", settings.default_model, "blue"),
+            ("workspace", settings.workspace, "dim"),
+        ])
+    elif provider == "cursor-agent":
+        items.extend([
+            ("model", settings.cursor_agent_model or "auto", "yellow"),
+            ("workspace", settings.cursor_agent_workspace or settings.workspace, "dim"),
+            ("indexing", "disabled" if settings.cursor_agent_disable_indexing else "enabled", "blue"),
+        ])
+    elif provider == "claude":
+        from .claude_oauth import get_claude_cli_config
+        cli_config = get_claude_cli_config()
+        effective_url = cli_config.base_url or settings.claude_api_base_url
+        effective_model = cli_config.default_model or settings.claude_model or "sonnet"
+        config_source = "CLI settings.json" if cli_config.base_url else "default"
+        mode = "OAuth API" if settings.claude_use_oauth_api else "CLI"
+        items.extend([
+            ("mode", mode, "yellow"),
+            ("model", effective_model, "blue"),
+            ("endpoint", effective_url, "magenta"),
+            ("config_source", config_source, "dim"),
+        ])
+    elif provider == "gemini":
+        mode = "CloudCode API" if settings.gemini_use_cloudcode_api else "CLI"
+        items.extend([
+            ("mode", mode, "yellow"),
+            ("model", settings.gemini_model or "gemini-pro", "blue"),
+            ("endpoint", settings.gemini_cloudcode_base_url, "magenta"),
+        ])
+    else:
+        # Auto or unknown provider
+        items.extend([
+            ("model", settings.default_model, "yellow"),
+        ])
     
     # Try rich table first
     try:
@@ -610,9 +642,12 @@ async def _log_startup_config() -> None:
         for key, value, style in items:
             table.add_row(key, f"[{style}]{value}[/{style}]")
         
+        # Provider-specific emoji
+        emoji = {"codex": "🤖", "cursor-agent": "🖱️", "claude": "🧠", "gemini": "✨"}.get(provider, "🚀")
+        
         console.print(Panel(
             table,
-            title="🚀 Agent CLI Gateway",
+            title=f"{emoji} Agent CLI Gateway [{provider}]",
             subtitle=f"📍 http://{settings.host}:{settings.port}",
             border_style="green",
             expand=False,
