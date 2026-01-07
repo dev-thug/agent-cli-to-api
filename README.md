@@ -241,6 +241,7 @@ Supported presets:
 ### Codex backend options
 
 - `CODEX_CODEX_ALLOW_TOOLS=1` to allow Codex backend tool calls (default: disabled).
+- OpenAI `tools`/`tool_choice` are mapped for Codex backend, Claude OAuth, and Gemini CloudCode (best-effort).
 
 ### Claude direct API (recommended)
 

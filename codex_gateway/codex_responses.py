@@ -198,6 +198,49 @@ def extract_codex_usage_headers(headers: Mapping[str, str]) -> dict[str, str]:
     return out
 
 
+def extract_codex_tool_calls(response: dict[str, Any]) -> list[dict[str, Any]]:
+    output = response.get("output")
+    if not isinstance(output, list):
+        return []
+
+    tool_calls: list[dict[str, Any]] = []
+    for item in output:
+        if not isinstance(item, dict):
+            continue
+        item_type = item.get("type")
+        func = item.get("function")
+        name = None
+        arguments = None
+        if isinstance(func, dict):
+            name = func.get("name")
+            arguments = func.get("arguments")
+        if item_type in {"tool_call", "function_call"} or (
+            isinstance(item.get("call_id"), str) and isinstance(item.get("name"), str)
+        ):
+            if name is None:
+                name = item.get("name")
+            if arguments is None:
+                arguments = item.get("arguments")
+            call_id = item.get("call_id") or item.get("id")
+            if not isinstance(call_id, str) or not call_id:
+                call_id = f"call_{len(tool_calls) + 1}"
+            if not isinstance(name, str) or not name:
+                name = "tool"
+            if not isinstance(arguments, str):
+                try:
+                    arguments = json.dumps(arguments or {}, ensure_ascii=False)
+                except Exception:
+                    arguments = "{}"
+            tool_calls.append(
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": name, "arguments": arguments},
+                }
+            )
+    return tool_calls
+
+
 def _prompt_dir() -> Path:
     return Path(__file__).with_name("codex_instructions")
 
@@ -272,6 +315,18 @@ def convert_chat_completions_to_codex_responses(
     if effort not in {"low", "medium", "high"}:
         effort = "medium"
     out["reasoning"] = {"effort": effort, "summary": "auto"}
+    extra = getattr(req, "model_extra", None) or {}
+    if allow_tools and isinstance(extra, dict):
+        tools = extra.get("tools")
+        if isinstance(tools, list) and tools:
+            out["tools"] = tools
+        tool_choice = extra.get("tool_choice")
+        if tool_choice is not None:
+            out["tool_choice"] = tool_choice
+        parallel_tool_calls = extra.get("parallel_tool_calls")
+        if parallel_tool_calls is not None:
+            out["parallel_tool_calls"] = parallel_tool_calls
+
     if not allow_tools:
         # For proxying chat completions / UI automation, we generally want pure text output.
         # Codex backend can otherwise attempt MCP/tool calls (which are not available here),
@@ -384,9 +439,10 @@ async def iter_codex_responses_events(
 
 async def collect_codex_responses_text_and_usage(
     events: AsyncIterator[dict[str, Any]],
-) -> tuple[str, dict[str, Any] | None]:
+) -> tuple[str, dict[str, Any] | None, list[dict[str, Any]] | None]:
     chunks: list[str] = []
     usage: dict[str, Any] | None = None
+    tool_calls: list[dict[str, Any]] | None = None
 
     async for evt in events:
         t = evt.get("type")
@@ -409,9 +465,13 @@ async def collect_codex_responses_text_and_usage(
                     "prompt_tokens_details": u.get("input_tokens_details") if isinstance(u.get("input_tokens_details"), dict) else {},
                     "completion_tokens_details": u.get("output_tokens_details") if isinstance(u.get("output_tokens_details"), dict) else {},
                 }
+            if isinstance(resp, dict):
+                parsed = extract_codex_tool_calls(resp)
+                if parsed:
+                    tool_calls = parsed
             break
 
-    return "".join(chunks), usage
+    return "".join(chunks), usage, tool_calls
 
 
 async def stream_codex_responses_deltas_with_keepalive(

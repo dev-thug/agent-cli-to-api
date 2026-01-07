@@ -14,7 +14,7 @@ from typing import Any
 
 from .config import settings
 from .http_client import get_async_client, request_json_with_retries
-from .openai_compat import ChatCompletionRequest, ChatMessage
+from .openai_compat import ChatCompletionRequest, ChatMessage, normalize_message_content
 
 
 @dataclass(frozen=True)
@@ -419,6 +419,75 @@ def _decode_data_url(url: str) -> tuple[bytes, str]:
     return data, mime
 
 
+def _openai_tools_to_gemini(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    declarations: list[dict[str, Any]] = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        if tool.get("type") != "function":
+            continue
+        func = tool.get("function")
+        if not isinstance(func, dict):
+            continue
+        name = func.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        entry: dict[str, Any] = {"name": name}
+        desc = func.get("description")
+        if isinstance(desc, str) and desc:
+            entry["description"] = desc
+        params = func.get("parameters")
+        if isinstance(params, dict):
+            entry["parameters"] = params
+        declarations.append(entry)
+    if not declarations:
+        return []
+    return [{"functionDeclarations": declarations}]
+
+
+def _openai_tool_choice_to_gemini(choice: Any) -> dict[str, Any] | None:
+    if choice is None:
+        return None
+    if isinstance(choice, str):
+        lowered = choice.strip().lower()
+        if lowered in {"auto", ""}:
+            return None
+        if lowered == "none":
+            return {"functionCallingConfig": {"mode": "NONE"}}
+        if lowered in {"required", "any"}:
+            return {"functionCallingConfig": {"mode": "ANY"}}
+        return None
+    if isinstance(choice, dict):
+        ctype = choice.get("type")
+        if ctype == "function":
+            fn = choice.get("function")
+            if isinstance(fn, dict) and isinstance(fn.get("name"), str) and fn["name"]:
+                return {
+                    "functionCallingConfig": {
+                        "mode": "ANY",
+                        "allowedFunctionNames": [fn["name"]],
+                    }
+                }
+    return None
+
+
+def _apply_openai_tools(payload: dict[str, Any], req: ChatCompletionRequest) -> None:
+    extra = getattr(req, "model_extra", None) or {}
+    if not isinstance(extra, dict):
+        return
+    tools = extra.get("tools")
+    tool_choice = extra.get("tool_choice")
+    if tool_choice == "none":
+        return
+    if isinstance(tools, list) and tools:
+        converted = _openai_tools_to_gemini(tools)
+        if converted:
+            payload["request"]["tools"] = converted
+    config = _openai_tool_choice_to_gemini(tool_choice)
+    if config is not None:
+        payload["request"]["toolConfig"] = config
+
+
 def _messages_to_cloudcode_payload(
     messages: list[ChatMessage],
     *,
@@ -456,11 +525,36 @@ def _messages_to_cloudcode_payload(
             "includeThoughts": False,
         }
 
+    tool_call_name_map: dict[str, str] = {}
     for m in messages:
         if m.role in {"system", "developer"}:
             continue
         role = "user" if m.role in {"user", "tool"} else "model"
         node: dict[str, Any] = {"role": role, "parts": []}
+        extra = getattr(m, "model_extra", None) or {}
+        tool_calls = extra.get("tool_calls") if isinstance(extra, dict) else None
+
+        if m.role == "tool":
+            tool_call_id = None
+            if isinstance(extra, dict):
+                tool_call_id = extra.get("tool_call_id")
+            if not isinstance(tool_call_id, str):
+                tool_call_id = getattr(m, "tool_call_id", None)
+            if isinstance(tool_call_id, str) and tool_call_id:
+                tool_name = tool_call_name_map.get(tool_call_id, "tool")
+                content = normalize_message_content(getattr(m, "content", None))
+                node["parts"].append(
+                    {
+                        "functionResponse": {
+                            "name": tool_name,
+                            "response": {"content": content},
+                        }
+                    }
+                )
+            if node["parts"]:
+                payload["request"]["contents"].append(node)
+            continue
+
         for part in _content_parts(m.content):
             ptype = part.get("type")
             if ptype == "text" and isinstance(part.get("text"), str):
@@ -487,6 +581,34 @@ def _messages_to_cloudcode_payload(
                     }
                 )
                 continue
+        if m.role == "assistant" and isinstance(tool_calls, list):
+            for call in tool_calls:
+                if not isinstance(call, dict):
+                    continue
+                func = call.get("function")
+                name = None
+                args = None
+                if isinstance(func, dict):
+                    name = func.get("name")
+                    args = func.get("arguments")
+                if not isinstance(name, str) or not name:
+                    name = call.get("name") if isinstance(call.get("name"), str) else None
+                if not isinstance(name, str) or not name:
+                    continue
+                parsed_args: dict[str, Any] = {}
+                if isinstance(args, str):
+                    try:
+                        parsed = json.loads(args)
+                        if isinstance(parsed, dict):
+                            parsed_args = parsed
+                    except Exception:
+                        parsed_args = {}
+                elif isinstance(args, dict):
+                    parsed_args = args
+                node["parts"].append({"functionCall": {"name": name, "args": parsed_args}})
+                call_id = call.get("id") or call.get("tool_call_id")
+                if isinstance(call_id, str) and call_id:
+                    tool_call_name_map[call_id] = name
         if node["parts"]:
             payload["request"]["contents"].append(node)
     return payload
@@ -559,6 +681,7 @@ async def generate_cloudcode(
         model_name=model_name,
         reasoning_effort=reasoning_effort,
     )
+    _apply_openai_tools(payload, req)
     url = f"{settings.gemini_cloudcode_base_url}/v1internal:generateContent"
     client = await get_async_client("gemini-cloudcode")
     resp = await request_json_with_retries(
@@ -602,6 +725,7 @@ async def iter_cloudcode_stream_events(
         model_name=model_name,
         reasoning_effort=reasoning_effort,
     )
+    _apply_openai_tools(payload, req)
     url = f"{settings.gemini_cloudcode_base_url}/v1internal:streamGenerateContent?alt=sse"
 
     last_usage: dict[str, int] | None = None

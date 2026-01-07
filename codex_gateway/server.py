@@ -26,6 +26,7 @@ from .codex_responses import (
     collect_codex_responses_text_and_usage,
     convert_chat_completions_to_codex_responses,
     extract_codex_usage_headers,
+    extract_codex_tool_calls,
     iter_codex_responses_events,
     load_codex_auth,
     maybe_refresh_codex_auth,
@@ -1244,6 +1245,7 @@ async def chat_completions(
 
     codex_session_id = _extract_codex_session_id(req, request)
     codex_response_headers: dict[str, str] = {}
+    tool_calls: list[dict[str, object]] | None = None
 
     created = int(time.time())
     resp_id = f"chatcmpl-{uuid.uuid4().hex}"
@@ -1546,12 +1548,12 @@ async def chat_completions(
                                     event_callback=_evt_log if settings.log_events else None,
                                     response_headers_cb=_capture_codex_headers,
                                 )
-                                text, usage = await collect_codex_responses_text_and_usage(events)
+                                text, usage, tool_calls = await collect_codex_responses_text_and_usage(events)
                                 # Re-wrap usage into the same shape as codex exec path.
                                 return type(
                                     "BackendResult",
                                     (),
-                                    {"text": text, "usage": usage},
+                                    {"text": text, "usage": usage, "tool_calls": tool_calls},
                                 )()
 
                             events = iter_codex_events(
@@ -1599,6 +1601,7 @@ async def chat_completions(
                                     raise
                         text = result.text
                         usage = result.usage
+                        tool_calls = getattr(result, "tool_calls", None)
                     elif provider == "cursor-agent":
                         cursor_model = provider_model or settings.cursor_agent_model or "auto"
                         if settings.log_events:
@@ -1785,6 +1788,11 @@ async def chat_completions(
                 # Only log summary when not using rich panels
                 usage_str = f" usage={usage}" if isinstance(usage, dict) else ""
                 logger.info("[%s] response status=200 duration_ms=%d chars=%d%s", resp_id, duration_ms, len(text), usage_str)
+            finish_reason = "tool_calls" if tool_calls else "stop"
+            message: dict = {"role": "assistant", "content": text}
+            if tool_calls:
+                message["tool_calls"] = tool_calls
+
             response: dict = {
                 "id": resp_id,
                 "object": "chat.completion",
@@ -1793,8 +1801,8 @@ async def chat_completions(
                 "choices": [
                     {
                         "index": 0,
-                        "message": {"role": "assistant", "content": text},
-                        "finish_reason": "stop",
+                        "message": message,
+                        "finish_reason": finish_reason,
                     }
                 ],
             }
@@ -1808,6 +1816,7 @@ async def chat_completions(
             global _active_requests
             assembled_text = ""
             stream_usage: dict[str, object] | None = None
+            stream_tool_calls: list[dict[str, object]] | None = None
             try:
                 async with sem:
                     # initial role chunk
@@ -2116,6 +2125,10 @@ async def chat_completions(
                                                     if isinstance(u.get("output_tokens_details"), dict)
                                                     else {},
                                                 }
+                                            if isinstance(resp, dict):
+                                                parsed_calls = extract_codex_tool_calls(resp)
+                                                if parsed_calls:
+                                                    stream_tool_calls = parsed_calls
                                             break
                                     else:
                                         if evt.get("type") == "item.completed":
@@ -2175,8 +2188,23 @@ async def chat_completions(
                         "object": "chat.completion.chunk",
                         "created": created,
                         "model": requested_model,
-                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {},
+                                "finish_reason": "tool_calls" if stream_tool_calls else "stop",
+                            }
+                        ],
                     }
+                    if stream_tool_calls:
+                        tool_chunk = {
+                            "id": resp_id,
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": requested_model,
+                            "choices": [{"index": 0, "delta": {"tool_calls": stream_tool_calls}, "finish_reason": None}],
+                        }
+                        yield f"data: {json.dumps(tool_chunk, ensure_ascii=False)}\n\n"
                     yield f"data: {json.dumps(end, ensure_ascii=False)}\n\n"
                     yield "data: [DONE]\n\n"
             finally:

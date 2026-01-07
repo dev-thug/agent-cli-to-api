@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 class ChatMessage(BaseModel):
     role: Literal["system", "user", "assistant", "tool", "developer"]
     content: Any
+    model_config = ConfigDict(extra="allow")
 
 
 class ChatCompletionRequest(BaseModel):

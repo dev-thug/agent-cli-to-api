@@ -12,7 +12,7 @@ import httpx
 
 from .config import settings
 from .http_client import get_async_client, request_json_with_retries
-from .openai_compat import ChatCompletionRequest, ChatMessage
+from .openai_compat import ChatCompletionRequest, ChatMessage, normalize_message_content
 
 _ANTHROPIC_VERSION = "2023-06-01"
 _DEFAULT_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
@@ -231,11 +231,14 @@ def _openai_messages_to_anthropic(req: ChatCompletionRequest) -> tuple[str | Non
     system_parts: list[str] = []
     out: list[dict[str, Any]] = []
 
+    tool_call_id_map: dict[str, str] = {}
     for msg in req.messages:
         if not isinstance(msg, ChatMessage):
             continue
         role = (msg.role or "").strip()
         blocks = _content_to_anthropic_blocks(getattr(msg, "content", None))
+        extra = getattr(msg, "model_extra", None) or {}
+        tool_calls = extra.get("tool_calls") if isinstance(extra, dict) else None
 
         if role == "system":
             for b in blocks:
@@ -243,14 +246,139 @@ def _openai_messages_to_anthropic(req: ChatCompletionRequest) -> tuple[str | Non
                     system_parts.append(str(b.get("text") or ""))
             continue
 
+        if role == "tool":
+            tool_call_id = None
+            if isinstance(extra, dict):
+                tool_call_id = extra.get("tool_call_id")
+            if not isinstance(tool_call_id, str):
+                tool_call_id = None
+            if tool_call_id is None:
+                tool_call_id = getattr(msg, "tool_call_id", None)
+            if not isinstance(tool_call_id, str) or not tool_call_id:
+                continue
+            content = normalize_message_content(getattr(msg, "content", None))
+            out.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tool_call_id,
+                            "content": content,
+                        }
+                    ],
+                }
+            )
+            continue
+
         if role not in {"user", "assistant"}:
             continue
+        if role == "assistant" and isinstance(tool_calls, list):
+            tool_blocks: list[dict[str, Any]] = []
+            for call in tool_calls:
+                if not isinstance(call, dict):
+                    continue
+                call_id = call.get("id") or call.get("tool_call_id")
+                if not isinstance(call_id, str) or not call_id:
+                    call_id = f"toolu_{len(tool_blocks) + 1}"
+                func = call.get("function")
+                name = None
+                args = None
+                if isinstance(func, dict):
+                    name = func.get("name")
+                    args = func.get("arguments")
+                if not isinstance(name, str) or not name:
+                    name = call.get("name") if isinstance(call.get("name"), str) else "tool"
+                parsed_args: dict[str, Any] = {}
+                if isinstance(args, str):
+                    try:
+                        parsed = json.loads(args)
+                        if isinstance(parsed, dict):
+                            parsed_args = parsed
+                    except Exception:
+                        parsed_args = {}
+                elif isinstance(args, dict):
+                    parsed_args = args
+                tool_blocks.append(
+                    {
+                        "type": "tool_use",
+                        "id": call_id,
+                        "name": name,
+                        "input": parsed_args,
+                    }
+                )
+                tool_call_id_map[call_id] = name
+            if tool_blocks:
+                blocks.extend(tool_blocks)
+
         if not blocks:
             continue
         out.append({"role": role, "content": blocks})
 
     system = "\n\n".join([p for p in (s.strip() for s in system_parts) if p]) or None
     return system, out
+
+
+def _openai_tools_to_anthropic(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        if tool.get("type") != "function":
+            continue
+        func = tool.get("function")
+        if not isinstance(func, dict):
+            continue
+        name = func.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        entry: dict[str, Any] = {"name": name}
+        desc = func.get("description")
+        if isinstance(desc, str) and desc:
+            entry["description"] = desc
+        params = func.get("parameters")
+        if isinstance(params, dict):
+            entry["input_schema"] = params
+        out.append(entry)
+    return out
+
+
+def _openai_tool_choice_to_anthropic(choice: Any) -> dict[str, Any] | None:
+    if choice is None:
+        return None
+    if isinstance(choice, str):
+        lowered = choice.strip().lower()
+        if lowered in {"auto", ""}:
+            return None
+        if lowered in {"required", "any"}:
+            return {"type": "any"}
+        if lowered == "none":
+            return None
+        return None
+    if isinstance(choice, dict):
+        ctype = choice.get("type")
+        if ctype == "function":
+            fn = choice.get("function")
+            if isinstance(fn, dict) and isinstance(fn.get("name"), str) and fn["name"]:
+                return {"type": "tool", "name": fn["name"]}
+    return None
+
+
+def _apply_openai_tools(payload: dict[str, Any], req: ChatCompletionRequest) -> None:
+    extra = getattr(req, "model_extra", None) or {}
+    if not isinstance(extra, dict):
+        return
+    tools = extra.get("tools")
+    tool_choice = extra.get("tool_choice")
+    if tool_choice == "none":
+        return
+    if isinstance(tools, list) and tools:
+        converted = _openai_tools_to_anthropic(tools)
+        if converted:
+            payload["tools"] = converted
+    mapped_choice = _openai_tool_choice_to_anthropic(tool_choice)
+    if mapped_choice is not None:
+        payload["tool_choice"] = mapped_choice
 
 
 def _extract_text_from_anthropic_response(data: Any) -> str:
@@ -341,6 +469,7 @@ async def generate_oauth(
     }
     if system:
         payload["system"] = system
+    _apply_openai_tools(payload, req)
 
     headers = {
         "Authorization": f"Bearer {auth_token}",
@@ -567,6 +696,7 @@ async def iter_oauth_stream_events(
     }
     if system:
         payload["system"] = system
+    _apply_openai_tools(payload, req)
 
     headers = {
         "Authorization": f"Bearer {auth_token}",
