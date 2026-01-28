@@ -248,6 +248,113 @@ def _prompt_dir() -> Path:
 _INSTRUCTIONS_CACHE: dict[str, str] = {}
 
 
+def _convert_openai_tool_for_codex(tool: dict[str, Any]) -> dict[str, Any]:
+    if tool.get("type") != "function":
+        return tool
+    func = tool.get("function")
+    if not isinstance(func, dict):
+        return tool
+    name = func.get("name") or tool.get("name")
+    if not isinstance(name, str) or not name:
+        return tool
+    out: dict[str, Any] = {"type": "function", "name": name}
+    description = func.get("description")
+    if isinstance(description, str) and description:
+        out["description"] = description
+    parameters = func.get("parameters")
+    if isinstance(parameters, dict):
+        out["parameters"] = parameters
+    strict = func.get("strict")
+    if strict is None:
+        strict = tool.get("strict")
+    if isinstance(strict, bool):
+        out["strict"] = strict
+    return out
+
+
+def _convert_openai_tools_for_codex(tools: list[Any]) -> list[dict[str, Any]]:
+    converted: list[dict[str, Any]] = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        converted.append(_convert_openai_tool_for_codex(tool))
+    return converted
+
+
+def _convert_openai_tool_choice_for_codex(choice: Any) -> Any:
+    if choice in {"auto", "none"}:
+        return choice
+    if isinstance(choice, dict) and choice.get("type") == "function":
+        func = choice.get("function")
+        if isinstance(func, dict) and isinstance(func.get("name"), str):
+            return {"type": "function", "name": func["name"]}
+    return choice
+
+
+def _extract_openai_tool_calls(message: ChatMessage) -> list[dict[str, Any]]:
+    extra = getattr(message, "model_extra", None)
+    if not isinstance(extra, dict):
+        extra = {}
+    tool_calls = extra.get("tool_calls")
+    if tool_calls is None:
+        function_call = extra.get("function_call")
+        if isinstance(function_call, dict):
+            tool_calls = [{"type": "function", "function": function_call}]
+    if not isinstance(tool_calls, list):
+        return []
+    return [call for call in tool_calls if isinstance(call, dict)]
+
+
+def _append_function_calls_from_message(out_input: list[dict[str, Any]], message: ChatMessage) -> None:
+    tool_calls = _extract_openai_tool_calls(message)
+    if not tool_calls:
+        return
+    for idx, call in enumerate(tool_calls, start=1):
+        call_id = call.get("id") or call.get("call_id") or call.get("tool_call_id")
+        if not isinstance(call_id, str) or not call_id:
+            call_id = f"call_{idx}"
+        func = call.get("function")
+        name = None
+        arguments = None
+        if isinstance(func, dict):
+            name = func.get("name")
+            arguments = func.get("arguments")
+        if name is None:
+            name = call.get("name")
+        if arguments is None:
+            arguments = call.get("arguments")
+        if not isinstance(name, str) or not name:
+            continue
+        if not isinstance(arguments, str):
+            try:
+                arguments = json.dumps(arguments or {}, ensure_ascii=False)
+            except Exception:
+                arguments = "{}"
+        out_input.append(
+            {
+                "type": "function_call",
+                "call_id": call_id,
+                "name": name,
+                "arguments": arguments,
+            }
+        )
+
+
+def _extract_tool_call_id_from_message(message: ChatMessage) -> str | None:
+    tool_call_id = None
+    if isinstance(message.content, dict):
+        tool_call_id = message.content.get("tool_call_id") or message.content.get("call_id")
+    if tool_call_id is None:
+        extra = getattr(message, "model_extra", None)
+        if isinstance(extra, dict):
+            tool_call_id = extra.get("tool_call_id") or extra.get("call_id")
+    if tool_call_id is None and hasattr(message, "tool_call_id"):
+        tool_call_id = getattr(message, "tool_call_id")
+    if isinstance(tool_call_id, str) and tool_call_id:
+        return tool_call_id
+    return None
+
+
 def _load_prompt_file(filename: str) -> str:
     if filename in _INSTRUCTIONS_CACHE:
         return _INSTRUCTIONS_CACHE[filename]
@@ -319,10 +426,10 @@ def convert_chat_completions_to_codex_responses(
     if allow_tools and isinstance(extra, dict):
         tools = extra.get("tools")
         if isinstance(tools, list) and tools:
-            out["tools"] = tools
+            out["tools"] = _convert_openai_tools_for_codex(tools)
         tool_choice = extra.get("tool_choice")
         if tool_choice is not None:
-            out["tool_choice"] = tool_choice
+            out["tool_choice"] = _convert_openai_tool_choice_for_codex(tool_choice)
         parallel_tool_calls = extra.get("parallel_tool_calls")
         if parallel_tool_calls is not None:
             out["parallel_tool_calls"] = parallel_tool_calls
@@ -341,11 +448,7 @@ def convert_chat_completions_to_codex_responses(
 
         if role == "tool":
             # Tool output (function_call_output). Best-effort only.
-            tool_call_id = None
-            if isinstance(message.content, dict) and isinstance(message.content.get("tool_call_id"), str):
-                tool_call_id = message.content["tool_call_id"]
-            if tool_call_id is None and hasattr(message, "tool_call_id"):
-                tool_call_id = getattr(message, "tool_call_id")
+            tool_call_id = _extract_tool_call_id_from_message(message)
             if not isinstance(tool_call_id, str) or not tool_call_id:
                 # If missing, keep as a user message to avoid request rejection.
                 role = "user"
@@ -385,6 +488,8 @@ def convert_chat_completions_to_codex_responses(
                     msg["content"].append({"type": "input_image", "image_url": url})
 
         out["input"].append(msg)
+        if role == "assistant":
+            _append_function_calls_from_message(out["input"], message)
 
     return out
 

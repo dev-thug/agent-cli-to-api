@@ -199,6 +199,33 @@ uv run agent-cli-to-api codex --env-file .env
 
 Tip: you can also opt-in to loading `.env` from the current directory with `--auto-env`.
 
+### Auto-start on macOS (launchd)
+
+This installs a **user** LaunchAgent and keeps the gateway running after reboot.
+
+```bash
+chmod +x scripts/install_launchd.sh
+scripts/install_launchd.sh --provider codex --host 127.0.0.1 --port 8000
+```
+
+Optional env/token:
+
+```bash
+scripts/install_launchd.sh --env-file "$PWD/.env" --token devtoken
+```
+
+Uninstall:
+
+```bash
+scripts/install_launchd.sh --uninstall
+```
+
+Logs:
+- `~/Library/Logs/com.codex-api.gateway.out.log`
+- `~/Library/Logs/com.codex-api.gateway.err.log`
+
+Note: `uv` must be on your PATH (e.g. `/opt/homebrew/bin/uv`).
+
 ### Prettier terminal logs (optional)
 
 Enable colored logs (Rich handler):
@@ -240,7 +267,7 @@ Supported presets:
 
 ### Codex backend options
 
-- `CODEX_CODEX_ALLOW_TOOLS=1` to allow Codex backend tool calls (default: disabled).
+- `CODEX_CODEX_ALLOW_TOOLS=0` to disable Codex backend tool calls (default: enabled).
 - OpenAI `tools`/`tool_choice` are mapped for Codex backend, Claude OAuth, and Gemini CloudCode (best-effort).
 
 ### Claude direct API (recommended)
