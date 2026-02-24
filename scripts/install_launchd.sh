@@ -132,16 +132,22 @@ cat >>"$PLIST_PATH" <<EOF
     <key>StandardErrorPath</key><string>${LOG_DIR}/${LABEL}.err.log</string>
 EOF
 
-if [[ -n "$TOKEN" ]]; then
-	cat >>"$PLIST_PATH" <<EOF
+RUNTIME_PATH="${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"
+
+cat >>"$PLIST_PATH" <<EOF
     <key>EnvironmentVariables</key>
     <dict>
+      <key>PATH</key><string>${RUNTIME_PATH}</string>
+EOF
+
+if [[ -n "$TOKEN" ]]; then
+	cat >>"$PLIST_PATH" <<EOF
       <key>CODEX_GATEWAY_TOKEN</key><string>${TOKEN}</string>
-    </dict>
 EOF
 fi
 
 cat >>"$PLIST_PATH" <<EOF
+    </dict>
   </dict>
 </plist>
 EOF

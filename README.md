@@ -378,3 +378,17 @@ model_reasoning_effort = "low"
 trust_level = "trusted"
 EOF
 ```
+
+## OpenClaw 연동
+
+OpenClaw에서 사용하려면 포트 `11434`로 게이트웨이를 시작합니다:
+
+```bash
+uv run agent-cli-to-api cursor-agent --host 127.0.0.1 --port 11434
+```
+
+launchd로 백그라운드 실행 (macOS):
+
+```bash
+scripts/install_launchd.sh --provider cursor-agent --host 127.0.0.1 --port 11434
+```
