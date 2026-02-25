@@ -76,7 +76,7 @@ Notes:
 - When you start with a fixed provider (e.g. `... gemini`), the client-sent `model` string is accepted but ignored by default (gateway uses the provider's default model).
 - Each provider still requires its own local CLI login state (no API key is required for Codex / Gemini CloudCode / Claude OAuth).
 - **Claude auto-detects** `~/.claude/settings.json` and uses direct API mode if `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_BASE_URL` are configured.
-- `uv run agent-cli-to-api cursor-agent` defaults to Cursor Auto routing (`CURSOR_AGENT_MODEL=auto`). If you want faster responses, run with `--preset cursor-fast`.
+- `uv run agent-cli-to-api cursor-agent` defaults to Cursor Auto routing (`CURSOR_AGENT_MODEL=auto`) and uses `~/.openclaw` as the default Cursor workspace (`CURSOR_AGENT_WORKSPACE`) for OpenClaw integration. The gateway expands `~` to an absolute path. If you want faster responses, run with `--preset cursor-fast`.
 - When running in an interactive terminal (TTY), the gateway enables colored logs and Markdown rendering by default. To disable: `CODEX_RICH_LOGS=0` or `CODEX_LOG_RENDER_MARKDOWN=0`.
 
 Quick smoke test (optional):

@@ -8,6 +8,7 @@ HOST="127.0.0.1"
 PORT="8000"
 ENV_FILE=""
 TOKEN=""
+OPENCLAW_WORKSPACE=""
 UNINSTALL=0
 
 usage() {
@@ -21,11 +22,14 @@ Options:
   --port <port>          Bind port (default: 8000)
   --env-file <path>      Optional env file for agent-cli-to-api
   --token <token>        Optional CODEX_GATEWAY_TOKEN env
+  --openclaw-workspace <path>  Set CURSOR_AGENT_WORKSPACE (default: ~/.openclaw for cursor-agent)
   --uninstall            Unload and remove plist
   -h, --help             Show help
 
 Examples:
   scripts/install_launchd.sh --provider codex --host 127.0.0.1 --port 8000
+  scripts/install_launchd.sh --provider cursor-agent --port 11434
+  scripts/install_launchd.sh --provider cursor-agent --openclaw-workspace "$HOME/.openclaw"
   scripts/install_launchd.sh --env-file "$PWD/.env" --token devtoken
   scripts/install_launchd.sh --uninstall
 EOF
@@ -55,6 +59,10 @@ while [[ $# -gt 0 ]]; do
 		;;
 	--token)
 		TOKEN="$2"
+		shift 2
+		;;
+	--openclaw-workspace)
+		OPENCLAW_WORKSPACE="$2"
 		shift 2
 		;;
 	--uninstall)
@@ -88,6 +96,10 @@ UV_BIN="$(command -v uv || true)"
 if [[ -z "$UV_BIN" ]]; then
 	echo "uv not found in PATH" >&2
 	exit 1
+fi
+
+if [[ "$PROVIDER" == "cursor-agent" && -z "$OPENCLAW_WORKSPACE" ]]; then
+	OPENCLAW_WORKSPACE="$HOME/.openclaw"
 fi
 
 PROGRAM_ARGS=(
@@ -143,6 +155,23 @@ EOF
 if [[ -n "$TOKEN" ]]; then
 	cat >>"$PLIST_PATH" <<EOF
       <key>CODEX_GATEWAY_TOKEN</key><string>${TOKEN}</string>
+EOF
+fi
+
+if [[ -n "$OPENCLAW_WORKSPACE" ]]; then
+	case "$OPENCLAW_WORKSPACE" in
+	~/*)
+		OPENCLAW_WORKSPACE="$HOME/${OPENCLAW_WORKSPACE#~/}"
+		;;
+	/*)
+		;;
+	*)
+		OPENCLAW_WORKSPACE="$ROOT_DIR/$OPENCLAW_WORKSPACE"
+		;;
+	esac
+	mkdir -p "$OPENCLAW_WORKSPACE"
+	cat >>"$PLIST_PATH" <<EOF
+      <key>CURSOR_AGENT_WORKSPACE</key><string>${OPENCLAW_WORKSPACE}</string>
 EOF
 fi
 

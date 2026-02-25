@@ -136,7 +136,7 @@ def _apply_preset() -> None:
             "CODEX_PROVIDER": "cursor-agent",
             "CURSOR_AGENT_MODEL": "auto",
             "CURSOR_AGENT_DISABLE_INDEXING": "1",
-            "CURSOR_AGENT_WORKSPACE": "/tmp/cursor-empty-workspace",
+            "CURSOR_AGENT_WORKSPACE": os.path.expanduser("~/.openclaw"),
             "CODEX_MAX_CONCURRENCY": "100",  # subprocess-based but still parallelizable
             "CODEX_LOG_MODE": "qa",
             "CODEX_LOG_MAX_CHARS": "4000",
@@ -220,7 +220,7 @@ def _apply_preset_env() -> None:
             "CODEX_PROVIDER": "cursor-agent",
             "CURSOR_AGENT_MODEL": "auto",
             "CURSOR_AGENT_DISABLE_INDEXING": "1",
-            "CURSOR_AGENT_WORKSPACE": "/tmp/cursor-empty-workspace",
+            "CURSOR_AGENT_WORKSPACE": os.path.expanduser("~/.openclaw"),
             "CODEX_MAX_CONCURRENCY": "10",
             "CODEX_LOG_MODE": "qa",
         },
@@ -293,6 +293,13 @@ def _env_str(name: str, default: str) -> str:
     if raw is None:
         return default
     return raw
+
+
+def _env_path_or_none(name: str) -> str | None:
+    raw = _env_str(name, "").strip()
+    if not raw:
+        return None
+    return os.path.abspath(os.path.expanduser(raw))
 
 
 def _env_csv(name: str) -> list[str]:
@@ -393,7 +400,7 @@ class Settings:
     cursor_agent_bin: str = os.environ.get("CURSOR_AGENT_BIN", "cursor-agent")
     # Cursor Agent workspace can be decoupled from CODEX_WORKSPACE to avoid leaking/reading a repo
     # when using cursor-agent for non-coding tasks (e.g. phone UI automation).
-    cursor_agent_workspace: str | None = (_env_str("CURSOR_AGENT_WORKSPACE", "").strip() or None)
+    cursor_agent_workspace: str | None = _env_path_or_none("CURSOR_AGENT_WORKSPACE")
     cursor_agent_api_key: str | None = os.environ.get("CURSOR_AGENT_API_KEY") or os.environ.get("CURSOR_API_KEY")
     cursor_agent_model: str | None = (_env_str("CURSOR_AGENT_MODEL", "").strip() or None)
     cursor_agent_stream_partial_output: bool = _env_bool("CURSOR_AGENT_STREAM_PARTIAL_OUTPUT", True)
