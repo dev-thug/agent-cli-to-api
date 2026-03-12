@@ -51,15 +51,13 @@ from .openai_compat import (
     normalize_message_content,
     responses_request_to_chat_request,
 )
-from .stream_json_cli import (
-    TextAssembler,
+from .stream_json_cli_stdin import (TextAssembler,
     extract_claude_delta,
     extract_cursor_agent_delta,
     extract_gemini_delta,
     extract_usage_from_claude_result,
     extract_usage_from_gemini_result,
-    iter_stream_json_events,
-)
+    iter_stream_json_events,)
 
 app = FastAPI(title="agent-cli-to-api", version="0.1.0")
 logger = logging.getLogger("uvicorn.error")
@@ -1678,7 +1676,6 @@ async def chat_completions(
                             cmd.extend(["--model", cursor_model])
                         if settings.cursor_agent_stream_partial_output:
                             cmd.append("--stream-partial-output")
-                        cmd.append(prompt)
                         if settings.log_events:
                             logger.info("[%s] cursor-agent cmd=%s", resp_id, " ".join(cmd[:12] + (["..."] if len(cmd) > 12 else [])))
 
@@ -1687,6 +1684,7 @@ async def chat_completions(
                         reported_model: str | None = None
                         async for evt in iter_stream_json_events(
                             cmd=cmd,
+                            stdin_data=prompt,
                             env=None,
                             timeout_seconds=settings.timeout_seconds,
                             stream_limit=settings.subprocess_stream_limit,
@@ -1747,12 +1745,12 @@ async def chat_completions(
                             if claude_model:
                                 cmd.extend(["--model", claude_model])
                             cmd.append("--")
-                            cmd.append(prompt)
 
                             assembler = TextAssembler()
                             fallback_text = None
                             async for evt in iter_stream_json_events(
                                 cmd=cmd,
+                                stdin_data=prompt,
                                 env=None,
                                 timeout_seconds=settings.timeout_seconds,
                                 stream_limit=settings.subprocess_stream_limit,
@@ -1789,11 +1787,11 @@ async def chat_completions(
                             cmd = [settings.gemini_bin, "-o", "stream-json"]
                             if gemini_model:
                                 cmd.extend(["-m", gemini_model])
-                            cmd.append(prompt)
 
                             assembler = TextAssembler()
                             async for evt in iter_stream_json_events(
                                 cmd=cmd,
+                                stdin_data=prompt,
                                 env=None,
                                 timeout_seconds=settings.timeout_seconds,
                                 stream_limit=settings.subprocess_stream_limit,
@@ -1986,11 +1984,11 @@ async def chat_completions(
                                 cmd.extend(["--model", cursor_model])
                             if settings.cursor_agent_stream_partial_output:
                                 cmd.append("--stream-partial-output")
-                            cmd.append(prompt)
                             if settings.log_events:
                                 logger.info("[%s] cursor-agent cmd=%s", resp_id, " ".join(cmd[:12] + (["..."] if len(cmd) > 12 else [])))
                             events = iter_stream_json_events(
                                 cmd=cmd,
+                                stdin_data=prompt,
                                 env=None,
                                 timeout_seconds=settings.timeout_seconds,
                                 stream_limit=settings.subprocess_stream_limit,
@@ -2031,9 +2029,9 @@ async def chat_completions(
                                 if claude_model:
                                     cmd.extend(["--model", claude_model])
                                 cmd.append("--")
-                                cmd.append(prompt)
                                 events = iter_stream_json_events(
                                     cmd=cmd,
+                                    stdin_data=prompt,
                                     env=None,
                                     timeout_seconds=settings.timeout_seconds,
                                     stream_limit=settings.subprocess_stream_limit,
@@ -2064,9 +2062,9 @@ async def chat_completions(
                                 cmd = [settings.gemini_bin, "-o", "stream-json"]
                                 if gemini_model:
                                     cmd.extend(["-m", gemini_model])
-                                cmd.append(prompt)
                                 events = iter_stream_json_events(
                                     cmd=cmd,
+                                    stdin_data=prompt,
                                     env=None,
                                     timeout_seconds=settings.timeout_seconds,
                                     stream_limit=settings.subprocess_stream_limit,
