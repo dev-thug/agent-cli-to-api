@@ -56,6 +56,7 @@ from .stream_json_cli_stdin import (TextAssembler,
     extract_cursor_agent_delta,
     extract_gemini_delta,
     extract_usage_from_claude_result,
+    extract_usage_from_cursor_agent_result,
     extract_usage_from_gemini_result,
     iter_stream_json_events,)
 
@@ -1708,6 +1709,9 @@ async def chat_completions(
                                         evt.get("session_id"),
                                     )
                             extract_cursor_agent_delta(evt, assembler)
+                            maybe_usage = extract_usage_from_cursor_agent_result(evt)
+                            if maybe_usage:
+                                usage = maybe_usage
                             if evt.get("type") == "result" and isinstance(evt.get("result"), str):
                                 fallback_text = evt["result"]
                         text = assembler.text or (fallback_text or "")
@@ -2207,6 +2211,9 @@ async def chat_completions(
                                                 evt.get("session_id"),
                                             )
                                     delta = _maybe_strip_answer_tags(extract_cursor_agent_delta(evt, assembler))
+                                    maybe_usage = extract_usage_from_cursor_agent_result(evt)
+                                    if maybe_usage:
+                                        stream_usage = maybe_usage
                                 elif provider == "claude":
                                     delta = _maybe_strip_answer_tags(extract_claude_delta(evt, assembler))
                                 elif provider == "gemini":

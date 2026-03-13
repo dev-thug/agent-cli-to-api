@@ -241,3 +241,47 @@ def extract_usage_from_gemini_result(evt: dict) -> dict[str, int] | None:
         "completion_tokens": out_tokens,
         "total_tokens": total,
     }
+
+
+def extract_usage_from_cursor_agent_result(evt: dict) -> dict[str, int] | None:
+    """
+    Extract token usage from cursor-agent result events.
+    
+    cursor-agent returns usage in camelCase format:
+    {
+        "type": "result",
+        "result": "...",
+        "usage": {
+            "inputTokens": 123,
+            "outputTokens": 456,
+            "cacheReadTokens": 789,
+            "cacheWriteTokens": 0
+        }
+    }
+    """
+    if evt.get("type") != "result":
+        return None
+    usage = evt.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    
+    in_tokens = int(usage.get("inputTokens") or 0)
+    out_tokens = int(usage.get("outputTokens") or 0)
+    cache_read = int(usage.get("cacheReadTokens") or 0)
+    cache_write = int(usage.get("cacheWriteTokens") or 0)
+    
+    result = {
+        "prompt_tokens": in_tokens,
+        "completion_tokens": out_tokens,
+        "total_tokens": in_tokens + out_tokens,
+    }
+    
+    # Include cache details if present (cursor-specific fields)
+    if cache_read > 0 or cache_write > 0:
+        result["prompt_tokens_details"] = {
+            "cached_tokens": cache_read,
+        }
+        if cache_write > 0:
+            result["cache_creation_input_tokens"] = cache_write
+    
+    return result
