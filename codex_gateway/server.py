@@ -2256,6 +2256,9 @@ async def chat_completions(
                             }
                         ],
                     }
+                    # Include usage in final chunk for OpenClaw/OpenAI compatibility
+                    if stream_usage:
+                        end["usage"] = stream_usage
                     if stream_tool_calls:
                         tool_chunk = {
                             "id": resp_id,
