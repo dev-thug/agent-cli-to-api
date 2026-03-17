@@ -239,12 +239,34 @@ def _check_auth(authorization: str | None) -> None:
 
 
 def _openai_error(message: str, *, status_code: int = 500) -> JSONResponse:
+    """
+    Return an OpenAI-compatible error response.
+    
+    Automatically detects rate limit errors and returns HTTP 429 with
+    rate_limit_error type for OpenClaw failover compatibility.
+    """
+    # Detect rate limit errors for OpenClaw failover
+    error_type = "codex_gateway_error"
+    error_code = None
+    
+    message_lower = message.lower()
+    if any(phrase in message_lower for phrase in [
+        "hit your limit",
+        "rate limit",
+        "too many requests",
+        "quota exceeded",
+        "usage limit"
+    ]):
+        error_type = "rate_limit_error"
+        error_code = "rate_limit_exceeded"
+        status_code = 429  # Override to 429 for rate limits
+    
     payload = ErrorResponse(
         error={
             "message": message,
-            "type": "codex_gateway_error",
+            "type": error_type,
             "param": None,
-            "code": None,
+            "code": error_code,
         }
     ).model_dump()
     return JSONResponse(status_code=status_code, content=payload)
