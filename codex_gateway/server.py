@@ -1765,6 +1765,7 @@ async def chat_completions(
                                 "stream-json",
                                 "--add-dir",
                                 settings.workspace,
+                                "--dangerously-skip-permissions",  # Auto-approve shell commands
                             ]
                             for d in settings.add_dirs:
                                 cmd.extend(["--add-dir", d])
@@ -2049,6 +2050,7 @@ async def chat_completions(
                                     "stream-json",
                                     "--add-dir",
                                     settings.workspace,
+                                    "--dangerously-skip-permissions",  # Auto-approve shell commands
                                 ]
                                 for d in settings.add_dirs:
                                     cmd.extend(["--add-dir", d])
