@@ -51,15 +51,14 @@ from .openai_compat import (
     normalize_message_content,
     responses_request_to_chat_request,
 )
-from .stream_json_cli import (
-    TextAssembler,
+from .stream_json_cli_stdin import (TextAssembler,
     extract_claude_delta,
     extract_cursor_agent_delta,
     extract_gemini_delta,
     extract_usage_from_claude_result,
+    extract_usage_from_cursor_agent_result,
     extract_usage_from_gemini_result,
-    iter_stream_json_events,
-)
+    iter_stream_json_events,)
 
 app = FastAPI(title="agent-cli-to-api", version="0.1.0")
 logger = logging.getLogger("uvicorn.error")
@@ -240,12 +239,34 @@ def _check_auth(authorization: str | None) -> None:
 
 
 def _openai_error(message: str, *, status_code: int = 500) -> JSONResponse:
+    """
+    Return an OpenAI-compatible error response.
+    
+    Automatically detects rate limit errors and returns HTTP 429 with
+    rate_limit_error type for OpenClaw failover compatibility.
+    """
+    # Detect rate limit errors for OpenClaw failover
+    error_type = "codex_gateway_error"
+    error_code = None
+    
+    message_lower = message.lower()
+    if any(phrase in message_lower for phrase in [
+        "hit your limit",
+        "rate limit",
+        "too many requests",
+        "quota exceeded",
+        "usage limit"
+    ]):
+        error_type = "rate_limit_error"
+        error_code = "rate_limit_exceeded"
+        status_code = 429  # Override to 429 for rate limits
+    
     payload = ErrorResponse(
         error={
             "message": message,
-            "type": "codex_gateway_error",
+            "type": error_type,
             "param": None,
-            "code": None,
+            "code": error_code,
         }
     ).model_dump()
     return JSONResponse(status_code=status_code, content=payload)
@@ -1678,7 +1699,6 @@ async def chat_completions(
                             cmd.extend(["--model", cursor_model])
                         if settings.cursor_agent_stream_partial_output:
                             cmd.append("--stream-partial-output")
-                        cmd.append(prompt)
                         if settings.log_events:
                             logger.info("[%s] cursor-agent cmd=%s", resp_id, " ".join(cmd[:12] + (["..."] if len(cmd) > 12 else [])))
 
@@ -1687,6 +1707,7 @@ async def chat_completions(
                         reported_model: str | None = None
                         async for evt in iter_stream_json_events(
                             cmd=cmd,
+                            stdin_data=prompt,
                             env=None,
                             timeout_seconds=settings.timeout_seconds,
                             stream_limit=settings.subprocess_stream_limit,
@@ -1710,6 +1731,9 @@ async def chat_completions(
                                         evt.get("session_id"),
                                     )
                             extract_cursor_agent_delta(evt, assembler)
+                            maybe_usage = extract_usage_from_cursor_agent_result(evt)
+                            if maybe_usage:
+                                usage = maybe_usage
                             if evt.get("type") == "result" and isinstance(evt.get("result"), str):
                                 fallback_text = evt["result"]
                         text = assembler.text or (fallback_text or "")
@@ -1741,18 +1765,19 @@ async def chat_completions(
                                 "stream-json",
                                 "--add-dir",
                                 settings.workspace,
+                                "--dangerously-skip-permissions",  # Auto-approve shell commands
                             ]
                             for d in settings.add_dirs:
                                 cmd.extend(["--add-dir", d])
                             if claude_model:
                                 cmd.extend(["--model", claude_model])
                             cmd.append("--")
-                            cmd.append(prompt)
 
                             assembler = TextAssembler()
                             fallback_text = None
                             async for evt in iter_stream_json_events(
                                 cmd=cmd,
+                                stdin_data=prompt,
                                 env=None,
                                 timeout_seconds=settings.timeout_seconds,
                                 stream_limit=settings.subprocess_stream_limit,
@@ -1789,11 +1814,11 @@ async def chat_completions(
                             cmd = [settings.gemini_bin, "-o", "stream-json"]
                             if gemini_model:
                                 cmd.extend(["-m", gemini_model])
-                            cmd.append(prompt)
 
                             assembler = TextAssembler()
                             async for evt in iter_stream_json_events(
                                 cmd=cmd,
+                                stdin_data=prompt,
                                 env=None,
                                 timeout_seconds=settings.timeout_seconds,
                                 stream_limit=settings.subprocess_stream_limit,
@@ -1986,11 +2011,11 @@ async def chat_completions(
                                 cmd.extend(["--model", cursor_model])
                             if settings.cursor_agent_stream_partial_output:
                                 cmd.append("--stream-partial-output")
-                            cmd.append(prompt)
                             if settings.log_events:
                                 logger.info("[%s] cursor-agent cmd=%s", resp_id, " ".join(cmd[:12] + (["..."] if len(cmd) > 12 else [])))
                             events = iter_stream_json_events(
                                 cmd=cmd,
+                                stdin_data=prompt,
                                 env=None,
                                 timeout_seconds=settings.timeout_seconds,
                                 stream_limit=settings.subprocess_stream_limit,
@@ -2025,15 +2050,16 @@ async def chat_completions(
                                     "stream-json",
                                     "--add-dir",
                                     settings.workspace,
+                                    "--dangerously-skip-permissions",  # Auto-approve shell commands
                                 ]
                                 for d in settings.add_dirs:
                                     cmd.extend(["--add-dir", d])
                                 if claude_model:
                                     cmd.extend(["--model", claude_model])
                                 cmd.append("--")
-                                cmd.append(prompt)
                                 events = iter_stream_json_events(
                                     cmd=cmd,
+                                    stdin_data=prompt,
                                     env=None,
                                     timeout_seconds=settings.timeout_seconds,
                                     stream_limit=settings.subprocess_stream_limit,
@@ -2064,9 +2090,9 @@ async def chat_completions(
                                 cmd = [settings.gemini_bin, "-o", "stream-json"]
                                 if gemini_model:
                                     cmd.extend(["-m", gemini_model])
-                                cmd.append(prompt)
                                 events = iter_stream_json_events(
                                     cmd=cmd,
+                                    stdin_data=prompt,
                                     env=None,
                                     timeout_seconds=settings.timeout_seconds,
                                     stream_limit=settings.subprocess_stream_limit,
@@ -2209,6 +2235,9 @@ async def chat_completions(
                                                 evt.get("session_id"),
                                             )
                                     delta = _maybe_strip_answer_tags(extract_cursor_agent_delta(evt, assembler))
+                                    maybe_usage = extract_usage_from_cursor_agent_result(evt)
+                                    if maybe_usage:
+                                        stream_usage = maybe_usage
                                 elif provider == "claude":
                                     delta = _maybe_strip_answer_tags(extract_claude_delta(evt, assembler))
                                 elif provider == "gemini":
@@ -2251,6 +2280,9 @@ async def chat_completions(
                             }
                         ],
                     }
+                    # Include usage in final chunk for OpenClaw/OpenAI compatibility
+                    if stream_usage:
+                        end["usage"] = stream_usage
                     if stream_tool_calls:
                         tool_chunk = {
                             "id": resp_id,
