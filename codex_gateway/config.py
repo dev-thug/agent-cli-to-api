@@ -142,6 +142,34 @@ def _apply_preset() -> None:
             "CODEX_LOG_MAX_CHARS": "4000",
             "CODEX_LOG_EVENTS": "0",
         },
+        # Cursor Agent + Composer 2 Fast (see `agent --list-models`: composer-2, composer-2-fast).
+        "cursor-composer2": {
+            "CODEX_PROVIDER": "cursor-agent",
+            "CURSOR_AGENT_MODEL": "composer-2-fast",
+            "CURSOR_AGENT_DISABLE_INDEXING": "1",
+            "CODEX_LOG_MODE": "qa",
+            "CODEX_LOG_MAX_CHARS": "4000",
+            "CODEX_LOG_EVENTS": "0",
+        },
+        # Like multi-fast, but default Cursor CLI model is Composer 2 Fast for cursor:/prefix routes.
+        "multi-composer2": {
+            "CODEX_PROVIDER": "auto",
+            "CODEX_MODEL": "gpt-5.2",
+            "CURSOR_AGENT_MODEL": "composer-2-fast",
+            "CODEX_MODEL_REASONING_EFFORT": "low",
+            "CODEX_USE_CODEX_RESPONSES_API": "1",
+            "CODEX_SANDBOX": "read-only",
+            "CODEX_APPROVAL_POLICY": "never",
+            "CODEX_SKIP_GIT_REPO_CHECK": "1",
+            "CODEX_DISABLE_SHELL_TOOL": "1",
+            "CODEX_DISABLE_VIEW_IMAGE_TOOL": "1",
+            "CODEX_SSE_KEEPALIVE_SECONDS": "2",
+            "CODEX_LOG_MODE": "qa",
+            "CODEX_LOG_MAX_CHARS": "4000",
+            "CODEX_LOG_EVENTS": "0",
+            "CODEX_ALLOW_CLIENT_PROVIDER_OVERRIDE": "1",
+            "CODEX_ALLOW_CLIENT_MODEL_OVERRIDE": "1",
+        },
         # Claude direct OAuth (no subprocess).
         "claude-oauth": {
             "CODEX_PROVIDER": "claude",
@@ -223,6 +251,26 @@ def _apply_preset_env() -> None:
             "CURSOR_AGENT_WORKSPACE": os.path.expanduser("~/.openclaw"),
             "CODEX_MAX_CONCURRENCY": "10",
             "CODEX_LOG_MODE": "qa",
+        },
+        "cursor-composer2": {
+            "CODEX_PROVIDER": "cursor-agent",
+            "CURSOR_AGENT_MODEL": "composer-2-fast",
+            "CURSOR_AGENT_DISABLE_INDEXING": "1",
+            "CODEX_LOG_MODE": "qa",
+        },
+        "multi-composer2": {
+            "CODEX_PROVIDER": "auto",
+            "CODEX_MODEL": "gpt-5.2",
+            "CURSOR_AGENT_MODEL": "composer-2-fast",
+            "CODEX_MODEL_REASONING_EFFORT": "low",
+            "CODEX_USE_CODEX_RESPONSES_API": "1",
+            "CODEX_DISABLE_SHELL_TOOL": "1",
+            "CODEX_DISABLE_VIEW_IMAGE_TOOL": "1",
+            "CODEX_SSE_KEEPALIVE_SECONDS": "2",
+            "CODEX_MAX_CONCURRENCY": "20",
+            "CODEX_LOG_MODE": "qa",
+            "CODEX_ALLOW_CLIENT_PROVIDER_OVERRIDE": "1",
+            "CODEX_ALLOW_CLIENT_MODEL_OVERRIDE": "1",
         },
         # Claude direct HTTP + SSE (requires OAuth creds file).
         "claude-oauth": {
@@ -331,6 +379,22 @@ def _env_json_dict_str_str(name: str) -> dict[str, str]:
     return out
 
 
+def _model_aliases_with_builtins() -> dict[str, str]:
+    """
+    Shorthand `model` strings for OpenAI-compatible clients.
+
+    Cursor Composer 2 ids match `agent --list-models` / `cursor-agent --list-models`.
+    `CODEX_MODEL_ALIASES` (JSON) merges on top and overrides duplicate keys.
+    """
+    builtins: dict[str, str] = {
+        "composer-2": "cursor:composer-2",
+        "composer-2-fast": "cursor:composer-2-fast",
+        "cursor-composer-2": "cursor:composer-2",
+        "cursor-composer-2-fast": "cursor:composer-2-fast",
+    }
+    return {**builtins, **_env_json_dict_str_str("CODEX_MODEL_ALIASES")}
+
+
 @dataclass(frozen=True)
 class Settings:
     host: str = os.environ.get("CODEX_GATEWAY_HOST", "0.0.0.0")
@@ -364,7 +428,7 @@ class Settings:
     skip_git_repo_check: bool = _env_bool("CODEX_SKIP_GIT_REPO_CHECK", True)
     enable_search: bool = _env_bool("CODEX_ENABLE_SEARCH", False)
     add_dirs: list[str] = field(default_factory=lambda: _env_csv("CODEX_ADD_DIRS"))
-    model_aliases: dict[str, str] = field(default_factory=lambda: _env_json_dict_str_str("CODEX_MODEL_ALIASES"))
+    model_aliases: dict[str, str] = field(default_factory=_model_aliases_with_builtins)
     advertised_models: list[str] = field(default_factory=lambda: _env_csv("CODEX_ADVERTISED_MODELS"))
     disable_shell_tool: bool = _env_bool("CODEX_DISABLE_SHELL_TOOL", True)
     # Avoid Codex preferring the MCP-based image tool over native vision input.
